@@ -17,7 +17,14 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
             let ty = &field.ty;
             let ident = &field.ident;
             quote! {
-               #crate_name::Field::new(stringify!(#ident), <#ty as #crate_name::DynTy>::TYPE)
+               #crate_name::Field::new(
+                   stringify!(#ident),
+                   <#ty as #crate_name::DynTy>::TYPE,
+                   match <#ty as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
+                       wincode::TypeMeta::Static { size, .. } => Some(size),
+                       _ => None,
+                   }
+               )
             }
         }),
         Data::Enum(_) => return Err(darling::Error::custom("enums unsupported")),
@@ -30,7 +37,11 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
                 fn schema() -> #crate_name::Schema {
                     #crate_name::Schema::new(
                         stringify!(#ident),
-                        Vec::from([#(#header),*]).into_boxed_slice()
+                        Vec::from([#(#header),*]).into_boxed_slice(),
+                        match <#ident as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
+                            wincode::TypeMeta::Static { size, .. } => Some(size),
+                            _ => None,
+                        }
                     )
                 }
             }

@@ -9,13 +9,15 @@ pub use {ty::*, value::*, wincode_dynamic_derive::*};
 pub struct Field {
     name: String,
     ty: Ty,
+    size: Option<usize>,
 }
 
 impl Field {
-    pub fn new(name: impl Into<String>, ty: Ty) -> Self {
+    pub fn new(name: impl Into<String>, ty: Ty, size: impl Into<Option<usize>>) -> Self {
         Self {
             name: name.into(),
             ty,
+            size: size.into(),
         }
     }
 
@@ -29,13 +31,19 @@ impl Field {
 pub struct Schema {
     name: String,
     fields: Box<[Field]>,
+    size: Option<usize>,
 }
 
 impl Schema {
-    pub fn new(name: impl Into<String>, fields: Box<[Field]>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        fields: Box<[Field]>,
+        size: impl Into<Option<usize>>,
+    ) -> Self {
         Self {
             name: name.into(),
             fields,
+            size: size.into(),
         }
     }
 }
@@ -55,6 +63,10 @@ impl SchemaRuntime {
 
     pub fn name(&self) -> &str {
         &self.schema.name
+    }
+
+    pub fn size(&self) -> Option<usize> {
+        self.schema.size
     }
 
     #[inline]
