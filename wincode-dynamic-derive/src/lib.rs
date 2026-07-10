@@ -12,7 +12,6 @@ pub(crate) type ImplBody = Data<Variant, Field>;
 
 #[derive(FromVariant)]
 #[darling(attributes(wincode_dynamic), forward_attrs)]
-#[expect(unused)]
 pub(crate) struct Variant {
     pub(crate) ident: Ident,
     pub(crate) fields: Fields<Field>,
