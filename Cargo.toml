@@ -1,0 +1,13 @@
+[workspace]
+members = ["wincode-dynamic", "wincode-dynamic-derive"]
+resolver = "2"
+
+[workspace.package]
+authors = ["Anza Maintainers <maintainers@anza.xyz>"]
+repository = "https://github.com/anza-xyz/wincode"
+homepage = "https://anza.xyz/"
+license = "Apache-2.0"
+edition = "2024"
+rust-version = "1.89.0"
+
+[workspace.dependencies]
