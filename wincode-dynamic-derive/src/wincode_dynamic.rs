@@ -27,8 +27,8 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
         const _: () = {
             impl #impl_generics #crate_name::SchemaDynamic for #ident #ty_generics #where_clause {
                 #[inline]
-                fn schema() -> #crate_name::Header {
-                    #crate_name::Header::new(
+                fn schema() -> #crate_name::Schema {
+                    #crate_name::Schema::new(
                         stringify!(#ident),
                         Vec::from([#(#header),*]).into_boxed_slice()
                     )

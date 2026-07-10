@@ -26,12 +26,12 @@ impl Field {
 }
 
 #[derive(SchemaRead, SchemaWrite, Debug, Clone)]
-pub struct Header {
+pub struct Schema {
     name: String,
     fields: Box<[Field]>,
 }
 
-impl Header {
+impl Schema {
     pub fn new(name: impl Into<String>, fields: Box<[Field]>) -> Self {
         Self {
             name: name.into(),
@@ -41,20 +41,20 @@ impl Header {
 }
 
 pub trait SchemaDynamic {
-    fn schema() -> Header;
+    fn schema() -> Schema;
 }
 
 pub struct SchemaRuntime {
-    header: Header,
+    schema: Schema,
 }
 
 impl SchemaRuntime {
-    pub fn new(header: Header) -> Self {
-        Self { header }
+    pub fn new(schema: Schema) -> Self {
+        Self { schema }
     }
 
     pub fn name(&self) -> &str {
-        &self.header.name
+        &self.schema.name
     }
 
     #[inline]
@@ -62,7 +62,7 @@ impl SchemaRuntime {
         &'a self,
         mut reader: impl Reader<'de> + 'a,
     ) -> impl Iterator<Item = ReadResult<Value<'de>>> + 'a {
-        self.header
+        self.schema
             .fields
             .iter()
             .map(move |field| field.parse(reader.by_ref()))
