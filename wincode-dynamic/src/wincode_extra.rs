@@ -37,6 +37,7 @@ where
 {
     type Dst = Vec<B>;
 
+    #[inline]
     fn read_with_context(
         ctx: Map<A, B, F>,
         mut reader: impl Reader<'de>,
@@ -45,6 +46,49 @@ where
         let len = <<DefaultConfig as Config>::LengthEncoding as SeqLen<DefaultConfig>>::read_prealloc_check::<B>(
             reader.by_ref(),
         )?;
+        <Vec<B> as SchemaReadContext<'de, DefaultConfig, LenMap<A, B, F>>>::read_with_context(
+            LenMap {
+                len,
+                f: ctx.f,
+                _marker: std::marker::PhantomData,
+            },
+            reader,
+            dst,
+        )
+    }
+}
+
+pub(crate) struct LenMap<A, B, F> {
+    len: usize,
+    f: F,
+    _marker: std::marker::PhantomData<(A, B)>,
+}
+
+impl<A, B, F> LenMap<A, B, F> {
+    pub fn new(len: usize, f: F) -> Self {
+        Self {
+            len,
+            f,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+unsafe impl<'de, A, B, F> SchemaReadContext<'de, DefaultConfig, LenMap<A, B, F>> for Vec<B>
+where
+    F: Fn(A::Dst) -> B,
+    A: SchemaRead<'de, DefaultConfig>,
+{
+    type Dst = Vec<B>;
+
+    #[inline]
+    fn read_with_context(
+        ctx: LenMap<A, B, F>,
+        mut reader: impl Reader<'de>,
+        dst: &mut MaybeUninit<Self::Dst>,
+    ) -> ReadResult<()> {
+        let LenMap { len, f, .. } = ctx;
+
         let mut vec = Vec::with_capacity(len);
         let ptr: *mut B = vec.as_mut_ptr();
 
@@ -54,14 +98,14 @@ where
                 let mut reader = unsafe { reader.as_trusted_for_seq(len, size) }?;
                 for i in 0..len {
                     let val = A::get(reader.by_ref())?;
-                    let mapped = (ctx.f)(val);
+                    let mapped = (f)(val);
                     unsafe { ptr.add(i).write(mapped) };
                 }
             }
             TypeMeta::Dynamic => {
                 for i in 0..len {
                     let val = A::get(reader.by_ref())?;
-                    let mapped = (ctx.f)(val);
+                    let mapped = (f)(val);
                     unsafe { ptr.add(i).write(mapped) };
                 }
             }

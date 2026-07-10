@@ -17,7 +17,7 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
             let ty = &field.ty;
             let ident = &field.ident;
             quote! {
-               #crate_name::Field::new( stringify!(#ident), <#ty as #crate_name::DynTy>::TYPE)
+               #crate_name::Field::new(stringify!(#ident), <#ty as #crate_name::DynTy>::TYPE)
             }
         }),
         Data::Enum(_) => return Err(darling::Error::custom("enums unsupported")),
@@ -26,6 +26,7 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
     Ok(quote! {
         const _: () = {
             impl #impl_generics #crate_name::SchemaDynamic for #ident #ty_generics #where_clause {
+                #[inline]
                 fn schema() -> #crate_name::Header {
                     #crate_name::Header::new(
                         stringify!(#ident),
