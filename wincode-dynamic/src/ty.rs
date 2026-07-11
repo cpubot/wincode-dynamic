@@ -45,7 +45,6 @@ impl Ty {
             Ty::Vec {
                 ty: PrimitiveTy::U8,
             } => <Cow<[u8]> as SchemaRead<'de, DefaultConfig>>::get(reader).map(Value::Bytes),
-
             Ty::Vec { ty } => {
                 <Vec<PrimitiveValue> as SchemaReadContext<'de, DefaultConfig, _>>::get_with_context(
                     ty, reader,

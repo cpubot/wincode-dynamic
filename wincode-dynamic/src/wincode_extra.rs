@@ -16,13 +16,16 @@ use {
 // Avoids intermediate collects and writes directly as `Vec<B>`.
 //
 // TODO: upstream
-pub(crate) struct Map<A, B, F> {
+pub(crate) struct Map<A, F> {
     f: F,
-    _marker: std::marker::PhantomData<(A, B)>,
+    _marker: std::marker::PhantomData<A>,
 }
 
-impl<A, B, F> Map<A, B, F> {
-    pub(crate) fn new(f: F) -> Self {
+impl<A, F> Map<A, F> {
+    pub(crate) fn new<B>(f: F) -> Self
+    where
+        F: FnMut(A) -> B,
+    {
         Self {
             f,
             _marker: std::marker::PhantomData,
@@ -30,23 +33,23 @@ impl<A, B, F> Map<A, B, F> {
     }
 }
 
-unsafe impl<'de, A, B, F> SchemaReadContext<'de, DefaultConfig, Map<A, B, F>> for Vec<B>
+unsafe impl<'de, A, B, F> SchemaReadContext<'de, DefaultConfig, Map<A, F>> for Vec<B>
 where
-    F: Fn(A::Dst) -> B,
     A: SchemaRead<'de, DefaultConfig>,
+    F: FnMut(A::Dst) -> B,
 {
     type Dst = Vec<B>;
 
     #[inline]
     fn read_with_context(
-        ctx: Map<A, B, F>,
+        ctx: Map<A, F>,
         mut reader: impl Reader<'de>,
         dst: &mut MaybeUninit<Self::Dst>,
     ) -> ReadResult<()> {
         let len = <<DefaultConfig as Config>::LengthEncoding as SeqLen<DefaultConfig>>::read_prealloc_check::<B>(
             reader.by_ref(),
         )?;
-        <Vec<B> as SchemaReadContext<'de, DefaultConfig, LenMap<A, B, F>>>::read_with_context(
+        <Vec<B> as SchemaReadContext<'de, DefaultConfig, LenMap<A, F>>>::read_with_context(
             LenMap {
                 len,
                 f: ctx.f,
@@ -58,14 +61,17 @@ where
     }
 }
 
-pub(crate) struct LenMap<A, B, F> {
+pub(crate) struct LenMap<A, F> {
     len: usize,
     f: F,
-    _marker: std::marker::PhantomData<(A, B)>,
+    _marker: std::marker::PhantomData<A>,
 }
 
-impl<A, B, F> LenMap<A, B, F> {
-    pub fn new(len: usize, f: F) -> Self {
+impl<A, F> LenMap<A, F> {
+    pub fn new<B>(len: usize, f: F) -> Self
+    where
+        F: FnMut(A) -> B,
+    {
         Self {
             len,
             f,
@@ -74,20 +80,20 @@ impl<A, B, F> LenMap<A, B, F> {
     }
 }
 
-unsafe impl<'de, A, B, F> SchemaReadContext<'de, DefaultConfig, LenMap<A, B, F>> for Vec<B>
+unsafe impl<'de, A, B, F> SchemaReadContext<'de, DefaultConfig, LenMap<A, F>> for Vec<B>
 where
-    F: Fn(A::Dst) -> B,
     A: SchemaRead<'de, DefaultConfig>,
+    F: FnMut(A::Dst) -> B,
 {
     type Dst = Vec<B>;
 
     #[inline]
     fn read_with_context(
-        ctx: LenMap<A, B, F>,
+        ctx: LenMap<A, F>,
         mut reader: impl Reader<'de>,
         dst: &mut MaybeUninit<Self::Dst>,
     ) -> ReadResult<()> {
-        let LenMap { len, f, .. } = ctx;
+        let LenMap { len, mut f, .. } = ctx;
 
         let mut vec = Vec::with_capacity(len);
         let ptr: *mut B = vec.as_mut_ptr();
