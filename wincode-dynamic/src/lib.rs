@@ -27,6 +27,8 @@ impl Field {
     }
 }
 
+#[derive(SchemaRead, SchemaWrite, Debug, Clone)]
+#[wincode(tag_encoding = "u8")]
 pub enum RootSchema {
     Struct(Schema),
     Enum {
