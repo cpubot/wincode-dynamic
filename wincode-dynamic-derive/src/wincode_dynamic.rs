@@ -1,10 +1,25 @@
 use {
-    crate::{Args, Field},
+    crate::{Args, Field, Variant},
     darling::{FromDeriveInput, Result, ast::Data},
     proc_macro2::{Span, TokenStream},
     quote::quote,
+    std::borrow::Cow,
     syn::{DeriveInput, LitStr, Path, parse_quote},
 };
+
+fn validate_variant_tags(variants: &[Variant]) -> Result<()> {
+    for variant in variants {
+        if let Some(tag) = &variant.tag {
+            return Err(darling::Error::custom(
+                "#[wincode(tag = ...)] is not supported by SchemaDynamic; RootSchema stores enum \
+                 variants by declaration index",
+            )
+            .with_span(tag));
+        }
+    }
+
+    Ok(())
+}
 
 fn field_to_tokens(crate_name: &Path, field: &Field, index: usize) -> TokenStream {
     let ty = &field.ty;
@@ -30,6 +45,9 @@ fn field_to_tokens(crate_name: &Path, field: &Field, index: usize) -> TokenStrea
 
 pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
     let args = Args::from_derive_input(&input)?;
+    if let Data::Enum(variants) = &args.data {
+        validate_variant_tags(variants)?;
+    }
     let crate_name = args.get_crate_name();
     let mut impl_generics = args.generics.clone();
     {
@@ -108,6 +126,16 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
                 }
             });
 
+            let tag_encoding = args
+                .tag_encoding
+                .as_ref()
+                .map(Cow::Borrowed)
+                .unwrap_or_else(|| {
+                    Cow::Owned(parse_quote! {
+                        <wincode::config::DefaultConfig as wincode::config::Config>::TagEncoding
+                    })
+                });
+
             quote! {
                 #crate_name::RootSchema::Enum {
                     name: stringify!(#ident).into(),
@@ -116,6 +144,7 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
                         wincode::TypeMeta::Static { size, .. } => Some(size),
                         wincode::TypeMeta::Dynamic => None,
                     },
+                    tag_encoding: <#tag_encoding as #crate_name::DynPrimitiveTy>::TYPE,
                 }
             }
         }
@@ -131,4 +160,54 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
             }
         };
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use {super::*, syn::parse_quote};
+
+    #[test]
+    fn accepts_enum_without_variant_tags() {
+        let input = parse_quote! {
+            enum Message {
+                First,
+                Second,
+            }
+        };
+
+        assert!(generate(input).is_ok());
+    }
+
+    #[test]
+    fn rejects_variant_tag() {
+        let input = parse_quote! {
+            enum Message {
+                #[wincode(tag = 0)]
+                First,
+                Second,
+            }
+        };
+
+        let error = generate(input).unwrap_err().write_errors().to_string();
+        assert!(
+            error.contains("#[wincode(tag = ...)] is not supported by SchemaDynamic"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_variant_tag_expression() {
+        let input = parse_quote! {
+            enum Message {
+                #[wincode(tag = FIRST_TAG)]
+                First,
+            }
+        };
+
+        let error = generate(input).unwrap_err().write_errors().to_string();
+        assert!(
+            error.contains("#[wincode(tag = ...)] is not supported by SchemaDynamic"),
+            "unexpected error: {error}"
+        );
+    }
 }

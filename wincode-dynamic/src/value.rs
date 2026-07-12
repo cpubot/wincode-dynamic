@@ -6,7 +6,7 @@ use {
     core::mem::MaybeUninit,
     std::borrow::Cow,
     wincode::{
-        ReadResult, SchemaRead, SchemaReadContext,
+        ReadError, ReadResult, SchemaRead, SchemaReadContext,
         config::{ConfigCore, DefaultConfig},
         context::Len,
         io::Reader,
@@ -75,6 +75,53 @@ unsafe impl<'de, C: ConfigCore> SchemaReadContext<'de, C, PrimitiveTy> for Primi
     }
 }
 
+unsafe impl<'de> SchemaReadContext<'de, DefaultConfig, PrimitiveTy> for usize {
+    type Dst = Self;
+
+    #[inline]
+    fn read_with_context(
+        ctx: PrimitiveTy,
+        reader: impl Reader<'de>,
+        dst: &mut MaybeUninit<Self::Dst>,
+    ) -> ReadResult<()> {
+        #[inline]
+        fn try_cast_to_usize(val: impl TryInto<usize>) -> ReadResult<usize> {
+            #[cold]
+            fn err() -> ReadError {
+                ReadError::Custom("cannot cast to usize")
+            }
+            val.try_into().map_err(|_| err())
+        }
+
+        let val = match ctx {
+            PrimitiveTy::U8 => <u8 as SchemaRead<DefaultConfig>>::get(reader).map(usize::from)?,
+            PrimitiveTy::U16 => <u16 as SchemaRead<DefaultConfig>>::get(reader).map(usize::from)?,
+            PrimitiveTy::U32 => {
+                <u32 as SchemaRead<DefaultConfig>>::get(reader).and_then(try_cast_to_usize)?
+            }
+            PrimitiveTy::U64 => {
+                <u64 as SchemaRead<DefaultConfig>>::get(reader).and_then(try_cast_to_usize)?
+            }
+            PrimitiveTy::I8 => {
+                <i8 as SchemaRead<DefaultConfig>>::get(reader).and_then(try_cast_to_usize)?
+            }
+            PrimitiveTy::I16 => {
+                <i16 as SchemaRead<DefaultConfig>>::get(reader).and_then(try_cast_to_usize)?
+            }
+            PrimitiveTy::I32 => {
+                <i32 as SchemaRead<DefaultConfig>>::get(reader).and_then(try_cast_to_usize)?
+            }
+            PrimitiveTy::I64 => {
+                <i64 as SchemaRead<DefaultConfig>>::get(reader).and_then(try_cast_to_usize)?
+            }
+            _ => return Err(ReadError::Custom("cannot cast to usize")),
+        };
+
+        dst.write(val);
+
+        Ok(())
+    }
+}
 unsafe impl<'de, C: ConfigCore> SchemaReadContext<'de, C, PrimitiveTy> for Value<'de> {
     type Dst = Self;
 

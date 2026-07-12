@@ -4,17 +4,19 @@ use {
         ast::{Data, Fields},
     },
     proc_macro::TokenStream,
-    syn::{DeriveInput, Generics, Ident, Path, Type, parse_macro_input, parse_quote},
+    syn::{DeriveInput, Expr, Generics, Ident, Path, Type, parse_macro_input, parse_quote},
 };
 mod wincode_dynamic;
 
 pub(crate) type ImplBody = Data<Variant, Field>;
 
 #[derive(FromVariant)]
-#[darling(attributes(wincode_dynamic), forward_attrs)]
+#[darling(attributes(wincode_dynamic, wincode), forward_attrs)]
 pub(crate) struct Variant {
     pub(crate) ident: Ident,
     pub(crate) fields: Fields<Field>,
+    #[darling(default)]
+    pub(crate) tag: Option<Expr>,
 }
 
 #[derive(FromField)]
@@ -25,7 +27,7 @@ pub(crate) struct Field {
 }
 
 #[derive(FromDeriveInput)]
-#[darling(attributes(wincode_dynamic), forward_attrs)]
+#[darling(attributes(wincode_dynamic, wincode), forward_attrs)]
 pub(crate) struct Args {
     pub(crate) ident: Ident,
     pub(crate) generics: Generics,
@@ -43,6 +45,8 @@ pub(crate) struct Args {
     /// The path is emitted as written and resolved from the derive expansion site.
     #[darling(rename = "crate", default)]
     pub(crate) crate_path: Option<Path>,
+    #[darling(default)]
+    pub(crate) tag_encoding: Option<Type>,
 }
 
 impl Args {
@@ -57,7 +61,7 @@ impl Args {
     }
 }
 
-#[proc_macro_derive(SchemaDynamic, attributes(wincode_dynamic))]
+#[proc_macro_derive(SchemaDynamic, attributes(wincode_dynamic, wincode))]
 pub fn derive_wincode_dynamic(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match wincode_dynamic::generate(input) {

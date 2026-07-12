@@ -1,10 +1,4 @@
-use wincode::{
-    ReadResult, SchemaRead, SchemaWrite,
-    config::{Config, DefaultConfig},
-    error::invalid_tag_encoding,
-    io::Reader,
-    tag_encoding::TagEncoding,
-};
+use wincode::{ReadResult, SchemaRead, SchemaWrite, error::invalid_tag_encoding, io::Reader};
 
 mod ty;
 mod value;
@@ -39,6 +33,7 @@ pub enum RootSchema {
         variants: Box<[Schema]>,
         size: Option<usize>,
         name: String,
+        tag_encoding: PrimitiveTy,
     },
 }
 
@@ -95,15 +90,14 @@ impl SchemaRuntime {
         &'a self,
         mut reader: impl Reader<'de> + 'a,
     ) -> ReadResult<impl Iterator<Item = ReadResult<Value<'de>>> + 'a> {
-        type DefaultTag = <DefaultConfig as Config>::TagEncoding;
-
         let fields = match &self.schema {
             RootSchema::Struct(schema) => &schema.fields,
-            RootSchema::Enum { variants, .. } => {
-                let encoded = <DefaultTag as SchemaRead<'de, DefaultConfig>>::get(reader.by_ref())?;
-
-                let disc =
-                    <DefaultTag as TagEncoding<DefaultConfig>>::try_into_u32(encoded)? as usize;
+            RootSchema::Enum {
+                variants,
+                tag_encoding,
+                ..
+            } => {
+                let disc = tag_encoding.parse_into_usize(reader.by_ref())?;
 
                 &variants
                     .get(disc)
@@ -138,6 +132,14 @@ mod test {
         Ping,
         Coordinates(u64, bool),
         Payload { text: String, bytes: Vec<u8> },
+    }
+
+    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[wincode_dynamic(internal)]
+    #[wincode(tag_encoding = "u8")]
+    enum U8EnumMessage {
+        Ping,
+        Value(u64),
     }
 
     fn assert_enum_message(
@@ -195,6 +197,7 @@ mod test {
             name,
             variants,
             size,
+            tag_encoding,
         } = EnumMessage::schema()
         else {
             panic!("expected an enum schema");
@@ -203,6 +206,7 @@ mod test {
         assert_eq!(name, "EnumMessage");
         assert_eq!(size, None);
         assert_eq!(variants.len(), 3);
+        assert_eq!(tag_encoding, PrimitiveTy::U32);
 
         assert_eq!(variants[0].name, "Ping");
         assert!(variants[0].fields.is_empty());
@@ -226,6 +230,27 @@ mod test {
             }
         );
         assert_eq!(variants[2].size, None);
+    }
+
+    #[test]
+    fn enum_with_u8_tag_encoding_roundtrips() {
+        let RootSchema::Enum { tag_encoding, .. } = U8EnumMessage::schema() else {
+            panic!("expected an enum schema");
+        };
+        assert_eq!(tag_encoding, PrimitiveTy::U8);
+
+        let runtime = SchemaRuntime::new(U8EnumMessage::schema());
+
+        let ping = wincode::serialize(&U8EnumMessage::Ping).unwrap();
+        assert_eq!(runtime.fields(ping.as_slice()).unwrap().count(), 0);
+
+        let value = wincode::serialize(&U8EnumMessage::Value(42)).unwrap();
+        let fields = runtime
+            .fields(value.as_slice())
+            .unwrap()
+            .collect::<ReadResult<Vec<_>>>()
+            .unwrap();
+        assert_eq!(fields, vec![Value::U64(42)]);
     }
 
     #[test]

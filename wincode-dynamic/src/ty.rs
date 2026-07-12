@@ -23,6 +23,13 @@ pub enum PrimitiveTy {
     Bool,
 }
 
+impl PrimitiveTy {
+    #[inline]
+    pub(crate) fn parse_into_usize<'de>(self, reader: impl Reader<'de>) -> ReadResult<usize> {
+        <usize as SchemaReadContext<DefaultConfig, _>>::get_with_context(self, reader)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, SchemaRead, SchemaWrite)]
 #[wincode(tag_encoding = "u8")]
 pub enum Ty {
