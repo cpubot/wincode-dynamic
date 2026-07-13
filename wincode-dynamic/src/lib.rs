@@ -30,8 +30,8 @@ impl<'meta, 'data> Field<'meta, 'data> {
     }
 
     #[inline]
-    pub fn ty(&self) -> &Ty {
-        &self.ty
+    pub fn ty(&self) -> Ty {
+        self.ty
     }
 
     #[inline]
@@ -216,7 +216,7 @@ mod test {
         value: &Value<'_>,
     ) {
         assert_eq!(field.name(), name);
-        assert_eq!(field.ty(), &ty);
+        assert_eq!(field.ty(), ty);
         assert_eq!(field.size(), size);
         assert_eq!(field.value(), value);
     }
@@ -265,7 +265,7 @@ mod test {
         assert_eq!(field.name(), "vals");
         assert_eq!(
             field.ty(),
-            &Ty::Vec {
+            Ty::Vec {
                 ty: PrimitiveTy::U64
             }
         );
@@ -313,7 +313,7 @@ mod test {
         assert_eq!(field.name(), "ar");
         assert_eq!(
             field.ty(),
-            &Ty::Array {
+            Ty::Array {
                 ty: PrimitiveTy::U64,
                 len: 4
             }
