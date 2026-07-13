@@ -32,7 +32,7 @@ fn field_to_tokens(crate_name: &Path, field: &Field, index: usize) -> TokenStrea
     };
 
     quote! {
-       #crate_name::Field::new(
+       #crate_name::FieldDef::new(
            #name,
            <#ty as #crate_name::DynTy>::TYPE,
            match <#ty as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {

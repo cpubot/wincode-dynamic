@@ -1,4 +1,7 @@
-use wincode::{ReadResult, SchemaRead, SchemaWrite, error::invalid_tag_encoding, io::Reader};
+use {
+    std::borrow::Cow,
+    wincode::{ReadResult, SchemaRead, SchemaWrite, error::invalid_tag_encoding, io::Reader},
+};
 
 mod ty;
 mod value;
@@ -6,13 +9,48 @@ mod wincode_extra;
 pub use {ty::*, value::*, wincode_dynamic_derive::*};
 
 #[derive(SchemaRead, SchemaWrite, Debug, Clone)]
-pub struct Field {
+pub struct FieldDef {
     name: String,
     ty: Ty,
     size: Option<usize>,
 }
 
-impl Field {
+#[derive(Debug, Clone)]
+pub struct Field<'meta, 'data> {
+    name: Cow<'meta, str>,
+    ty: Ty,
+    size: Option<usize>,
+    value: Value<'data>,
+}
+
+impl<'meta, 'data> Field<'meta, 'data> {
+    #[inline]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[inline]
+    pub fn ty(&self) -> &Ty {
+        &self.ty
+    }
+
+    #[inline]
+    pub fn size(&self) -> Option<usize> {
+        self.size
+    }
+
+    #[inline]
+    pub fn value(&self) -> &Value<'data> {
+        &self.value
+    }
+
+    #[inline]
+    pub fn into_value(self) -> Value<'data> {
+        self.value
+    }
+}
+
+impl FieldDef {
     pub fn new(name: impl Into<String>, ty: Ty, size: impl Into<Option<usize>>) -> Self {
         Self {
             name: name.into(),
@@ -42,14 +80,14 @@ pub enum RootSchema {
 #[derive(SchemaRead, SchemaWrite, Debug, Clone)]
 pub struct Schema {
     name: String,
-    fields: Box<[Field]>,
+    fields: Box<[FieldDef]>,
     size: Option<usize>,
 }
 
 impl Schema {
     pub fn new(
         name: impl Into<String>,
-        fields: Box<[Field]>,
+        fields: Box<[FieldDef]>,
         size: impl Into<Option<usize>>,
     ) -> Self {
         Self {
@@ -64,6 +102,7 @@ pub trait SchemaDynamic {
     fn schema() -> RootSchema;
 }
 
+#[derive(Debug)]
 pub struct SchemaRuntime {
     schema: RootSchema,
 }
@@ -91,7 +130,7 @@ impl SchemaRuntime {
     pub fn fields<'a, 'de>(
         &'a self,
         mut reader: impl Reader<'de> + 'a,
-    ) -> ReadResult<impl Iterator<Item = ReadResult<Value<'de>>> + 'a> {
+    ) -> ReadResult<impl Iterator<Item = ReadResult<Field<'a, 'de>>> + 'a> {
         let fields = match &self.schema {
             RootSchema::Struct(schema) => &schema.fields,
             RootSchema::Enum {
@@ -108,7 +147,15 @@ impl SchemaRuntime {
             }
         };
 
-        Ok(fields.iter().map(move |field| field.parse(reader.by_ref())))
+        Ok(fields.iter().map(move |field| {
+            let value = field.parse(reader.by_ref())?;
+            Ok(Field {
+                name: Cow::Borrowed(&field.name),
+                ty: field.ty,
+                size: field.size,
+                value,
+            })
+        }))
     }
 }
 
@@ -147,7 +194,7 @@ mod test {
     fn assert_enum_message(
         runtime: &SchemaRuntime,
         message: &EnumMessage,
-        expected: Vec<Value<'_>>,
+        expected: Vec<(&str, Ty, Option<usize>, Value<'_>)>,
     ) {
         let payload = wincode::serialize(message).unwrap();
         let actual = runtime
@@ -155,7 +202,23 @@ mod test {
             .unwrap()
             .collect::<ReadResult<Vec<_>>>()
             .unwrap();
-        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), expected.len());
+        for (actual, (name, ty, size, value)) in actual.iter().zip(expected.iter()) {
+            assert_field(actual, name, *ty, *size, value);
+        }
+    }
+
+    fn assert_field(
+        field: &Field<'_, '_>,
+        name: &str,
+        ty: Ty,
+        size: Option<usize>,
+        value: &Value<'_>,
+    ) {
+        assert_eq!(field.name(), name);
+        assert_eq!(field.ty(), &ty);
+        assert_eq!(field.size(), size);
+        assert_eq!(field.value(), value);
     }
 
     #[test]
@@ -181,10 +244,33 @@ mod test {
             .unwrap();
         let mut result = result.into_iter();
 
-        assert_eq!(result.next(), Some(Value::U64(42)));
-        assert_eq!(result.next(), Some(Value::Bool(true)));
+        let field = result.next().unwrap();
+        assert_field(
+            &field,
+            "a",
+            Ty::PrimitiveTy(PrimitiveTy::U64),
+            Some(8),
+            &Value::U64(42),
+        );
+        let field = result.next().unwrap();
+        assert_field(
+            &field,
+            "b",
+            Ty::PrimitiveTy(PrimitiveTy::Bool),
+            Some(1),
+            &Value::Bool(true),
+        );
 
-        let Some(Value::Vec(vals)) = result.next() else {
+        let field = result.next().unwrap();
+        assert_eq!(field.name(), "vals");
+        assert_eq!(
+            field.ty(),
+            &Ty::Vec {
+                ty: PrimitiveTy::U64
+            }
+        );
+        assert_eq!(field.size(), None);
+        let Value::Vec(vals) = field.value else {
             panic!("expected vals to be a lazy vector");
         };
         assert_eq!(vals.ty(), PrimitiveTy::U64);
@@ -204,10 +290,36 @@ mod test {
         );
         assert!(vals.try_into_iter_as::<u32>().is_err());
 
-        assert_eq!(result.next(), Some(Value::String("hello world".into())));
-        assert_eq!(result.next(), Some(Value::Bytes(vec![42; 8].into())));
+        let field = result.next().unwrap();
+        assert_field(
+            &field,
+            "str",
+            Ty::String,
+            None,
+            &Value::String("hello world".into()),
+        );
+        let field = result.next().unwrap();
+        assert_field(
+            &field,
+            "bytes",
+            Ty::Vec {
+                ty: PrimitiveTy::U8,
+            },
+            None,
+            &Value::Bytes(vec![42; 8].into()),
+        );
 
-        let Some(Value::Vec(vals)) = result.next() else {
+        let field = result.next().unwrap();
+        assert_eq!(field.name(), "ar");
+        assert_eq!(
+            field.ty(),
+            &Ty::Array {
+                ty: PrimitiveTy::U64,
+                len: 4
+            }
+        );
+        assert_eq!(field.size(), Some(32));
+        let Value::Vec(vals) = field.value else {
             panic!("expected ar to be a lazy vector");
         };
         assert_eq!(
@@ -218,8 +330,18 @@ mod test {
             vec![444; 4]
         );
 
-        assert_eq!(result.next(), Some(Value::Bytes(vec![43; 8].into())));
-        assert_eq!(result.next(), None);
+        let field = result.next().unwrap();
+        assert_field(
+            &field,
+            "ar_bytes",
+            Ty::Array {
+                ty: PrimitiveTy::U8,
+                len: 8,
+            },
+            Some(8),
+            &Value::Bytes(vec![43; 8].into()),
+        );
+        assert!(result.next().is_none());
     }
 
     #[test]
@@ -243,7 +365,7 @@ mod test {
             .next()
             .unwrap()
             .unwrap();
-        let Value::Vec(values) = value else {
+        let Value::Vec(values) = value.value else {
             panic!("expected a lazy vector");
         };
 
@@ -373,7 +495,14 @@ mod test {
             .unwrap()
             .collect::<ReadResult<Vec<_>>>()
             .unwrap();
-        assert_eq!(fields, vec![Value::U64(42)]);
+        assert_eq!(fields.len(), 1);
+        assert_field(
+            &fields[0],
+            "0",
+            Ty::PrimitiveTy(PrimitiveTy::U64),
+            Some(8),
+            &Value::U64(42),
+        );
     }
 
     #[test]
@@ -384,7 +513,20 @@ mod test {
         assert_enum_message(
             &runtime,
             &EnumMessage::Coordinates(42, true),
-            vec![Value::U64(42), Value::Bool(true)],
+            vec![
+                (
+                    "0",
+                    Ty::PrimitiveTy(PrimitiveTy::U64),
+                    Some(8),
+                    Value::U64(42),
+                ),
+                (
+                    "1",
+                    Ty::PrimitiveTy(PrimitiveTy::Bool),
+                    Some(1),
+                    Value::Bool(true),
+                ),
+            ],
         );
         assert_enum_message(
             &runtime,
@@ -393,8 +535,20 @@ mod test {
                 bytes: vec![1, 2, 3, 4],
             },
             vec![
-                Value::String(Cow::Owned("hello".into())),
-                Value::Bytes(Cow::Owned(vec![1, 2, 3, 4])),
+                (
+                    "text",
+                    Ty::String,
+                    None,
+                    Value::String(Cow::Owned("hello".into())),
+                ),
+                (
+                    "bytes",
+                    Ty::Vec {
+                        ty: PrimitiveTy::U8,
+                    },
+                    None,
+                    Value::Bytes(Cow::Owned(vec![1, 2, 3, 4])),
+                ),
             ],
         );
     }
@@ -463,11 +617,10 @@ mod test {
             .collect::<ReadResult<Vec<_>>>()
             .unwrap();
 
-        match fields.as_slice() {
-            [
-                Value::String(Cow::Borrowed(text)),
-                Value::Bytes(Cow::Borrowed(bytes)),
-            ] => {
+        assert_eq!(fields[0].name(), "text");
+        assert_eq!(fields[1].name(), "bytes");
+        match (fields[0].value(), fields[1].value()) {
+            (Value::String(Cow::Borrowed(text)), Value::Bytes(Cow::Borrowed(bytes))) => {
                 assert_eq!(*text, "borrow me");
                 assert_eq!(*bytes, [5, 6, 7, 8]);
             }
@@ -492,7 +645,14 @@ mod test {
             .collect::<ReadResult<Vec<_>>>()
             .unwrap();
 
-        assert_eq!(fields, vec![Value::U64(77)]);
+        assert_eq!(fields.len(), 1);
+        assert_field(
+            &fields[0],
+            "0",
+            Ty::PrimitiveTy(PrimitiveTy::U64),
+            Some(8),
+            &Value::U64(77),
+        );
 
         let empty_payload = wincode::serialize(&Generic::<u64>::Empty).unwrap();
         assert_eq!(runtime.fields(empty_payload.as_slice()).unwrap().count(), 0);
@@ -508,7 +668,7 @@ mod test {
                 .unwrap()
                 .collect::<ReadResult<Vec<_>>>()
                 .unwrap();
-            let mut fields = fields.into_iter();
+            let mut fields = fields.into_iter().map(|field| field.value);
 
             prop_assert_eq!(fields.next(), Some(Value::U64(message.a)));
             prop_assert_eq!(fields.next(), Some(Value::Bool(message.b)));
@@ -549,7 +709,7 @@ mod test {
                 fields.next(),
                 Some(Value::Bytes(Cow::Borrowed(message.ar_bytes.as_slice())))
             );
-            prop_assert_eq!(fields.next(), None);
+            prop_assert!(fields.next().is_none());
         }
 
         #[test]
@@ -560,7 +720,10 @@ mod test {
                 .fields(payload.as_slice())
                 .unwrap()
                 .collect::<ReadResult<Vec<_>>>()
-                .unwrap();
+                .unwrap()
+                .into_iter()
+                .map(|field| field.value)
+                .collect::<Vec<_>>();
             let expected = match &message {
                 EnumMessage::Ping => Vec::new(),
                 EnumMessage::Coordinates(x, y) => vec![Value::U64(*x), Value::Bool(*y)],
@@ -612,7 +775,13 @@ mod test {
                         .next()
                         .unwrap()
                         .unwrap();
-                    let Value::Vec(lazy) = value else {
+                    prop_assert_eq!(value.name(), "values");
+                    prop_assert!(
+                        matches!(value.ty(), Ty::Vec { .. }),
+                        "field type was not a vector"
+                    );
+                    prop_assert_eq!(value.size(), None);
+                    let Value::Vec(lazy) = value.value else {
                         return Err(TestCaseError::fail("expected a lazy vector"));
                     };
 

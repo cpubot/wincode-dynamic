@@ -117,10 +117,13 @@ pub mod lazy_vec {
         /// let runtime = SchemaRuntime::new(Message::schema());
         /// let mut fields = runtime.fields(encoded.as_slice())?;
         ///
-        /// let Value::Vec(values) = fields.next().expect("values field")? else {
+        /// let field = fields.next().expect("values field")?;
+        /// assert_eq!(field.name(), "values");
+        /// let Value::Vec(values) = field.value() else {
         ///     panic!("expected a vector");
         /// };
         /// let values = values
+        ///     .clone()
         ///     .try_into_iter_as::<u64>()?
         ///     .collect::<ReadResult<Vec<_>>>()?;
         ///
