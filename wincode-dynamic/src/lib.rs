@@ -422,10 +422,7 @@ mod test {
         use wincode::config::DEFAULT_PREALLOCATION_SIZE_LIMIT;
 
         let len = DEFAULT_PREALLOCATION_SIZE_LIMIT / size_of::<PrimitiveValue>() + 1;
-        let values = LazyVec {
-            ty: PrimitiveTy::U8,
-            payload: Cow::Owned(vec![0; len]),
-        };
+        let values = LazyVec::try_new(PrimitiveTy::U8, Cow::Owned(vec![0; len])).unwrap();
 
         let error = values.into_dyn_vec().unwrap_err();
         assert!(matches!(
@@ -787,7 +784,7 @@ mod test {
 
                     prop_assert_eq!(lazy.len(), values.len());
                     prop_assert_eq!(lazy.is_empty(), values.is_empty());
-                    prop_assert!(matches!(lazy.payload, Cow::Borrowed(_)));
+                    prop_assert!(lazy.has_borrowed_payload());
                     prop_assert_eq!(
                         lazy.clone().into_dyn_vec().unwrap(),
                         values.iter().copied().map($variant).collect::<Vec<_>>()

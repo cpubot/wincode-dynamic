@@ -47,15 +47,19 @@ pub enum Value<'a> {
     Vec(LazyVec<'a>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
 /// A lazily decoded vector of fixed-width primitive values.
 ///
 /// The encoded payload remains borrowed when the input reader supports stable
 /// borrowing. Use [`Self::try_into_iter_as`] when the concrete element type is
 /// known, or [`Self::into_dyn_vec`] to decode dynamically typed values.
+#[derive(Debug, Clone, PartialEq)]
 pub struct LazyVec<'a> {
-    pub(crate) ty: PrimitiveTy,
-    pub(crate) payload: Cow<'a, [u8]>,
+    ty: PrimitiveTy,
+    payload: Cow<'a, [u8]>,
+    /// The length of the vector, in _elements_ (not bytes).
+    ///
+    /// Invariant: `payload.len() == len * ty.size()`.
+    len: usize,
 }
 
 /// Lazy-vector iterator types.
@@ -73,13 +77,40 @@ pub mod lazy_vec {
     }
 
     impl<'a> LazyVec<'a> {
+        /// Creates a lazy vector from an encoded primitive payload.
+        ///
+        /// The element count is derived from the payload length and the width of
+        /// `ty`. The payload is retained without decoding or copying it.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the payload length is not an exact multiple of the
+        /// element width.
+        #[inline]
+        pub(crate) fn try_new(ty: PrimitiveTy, payload: Cow<'a, [u8]>) -> ReadResult<Self> {
+            #[cold]
+            const fn invalid_length() -> ReadError {
+                ReadError::Custom("lazy vector payload has an invalid length")
+            }
+
+            let element_size = ty.size();
+            if !payload.len().is_multiple_of(element_size) {
+                return Err(invalid_length());
+            }
+            Ok(Self {
+                ty,
+                len: payload.len() / element_size,
+                payload,
+            })
+        }
+
         /// Converts this vector into a lazy iterator of `As` values.
         ///
         /// The requested type must match the primitive element type recorded in
         /// the schema. This prevents, for example, interpreting the payload of a
         /// `Vec<u64>` as a sequence of `u8` values.
         ///
-        /// This method validates the element type and payload width, but it does
+        /// This method validates the element type and its width, but it does
         /// not decode any elements. Decoding happens as the returned iterator is
         /// advanced, and each item is returned as a [`ReadResult`]. Consequently,
         /// malformed element encodings are reported by the iterator item that
@@ -97,7 +128,7 @@ pub mod lazy_vec {
         /// Returns an error if:
         ///
         /// - `As` does not match the vector's recorded primitive element type; or
-        /// - the payload length is not a multiple of the element width.
+        /// - the size of `As` does not match the recorded element width.
         ///
         /// # Examples
         ///
@@ -136,24 +167,15 @@ pub mod lazy_vec {
             As: DynPrimitiveTy,
         {
             #[cold]
-            fn ty_mismatch() -> ReadError {
+            const fn ty_mismatch() -> ReadError {
                 ReadError::Custom("lazy vector element type mismatch")
             }
-            if As::TYPE != self.ty {
+            if As::TYPE != self.ty || self.ty.size() != size_of::<As>() {
                 return Err(ty_mismatch());
             }
 
-            #[cold]
-            fn invalid_length() -> ReadError {
-                ReadError::Custom("lazy vector payload has an invalid length")
-            }
-
-            let element_size = size_of::<As>();
-            if element_size == 0 || !self.payload.len().is_multiple_of(element_size) {
-                return Err(invalid_length());
-            }
             Ok(IntoIter {
-                len: self.payload.len() / element_size,
+                len: self.len,
                 payload: self.payload,
                 index: 0,
                 _marker: std::marker::PhantomData,
@@ -168,20 +190,19 @@ pub mod lazy_vec {
         /// Returns the first element decoding error encountered in the payload.
         #[inline]
         pub fn into_dyn_vec(self) -> ReadResult<Vec<PrimitiveValue>> {
-            let len = self.payload.len() / self.ty.size();
             <<DefaultConfig as Config>::LengthEncoding as SeqLen<DefaultConfig>>::prealloc_check::<
                 PrimitiveValue,
-            >(len)?;
+            >(self.len)?;
             <Array<PrimitiveValue> as SchemaReadContext<DefaultConfig, _>>::get_with_context(
-                (Len(len), self.ty),
+                (Len(self.len), self.ty),
                 &self.payload[..],
             )
         }
 
         /// Returns the number of elements in the vector.
         #[inline]
-        pub fn len(&self) -> usize {
-            self.payload.len() / self.ty.size()
+        pub const fn len(&self) -> usize {
+            self.len
         }
 
         /// Returns `true` if the vector contains no elements.
@@ -190,9 +211,14 @@ pub mod lazy_vec {
             self.payload.is_empty()
         }
 
+        #[cfg(test)]
+        pub(crate) fn has_borrowed_payload(&self) -> bool {
+            matches!(self.payload, Cow::Borrowed(_))
+        }
+
         /// Returns the vector's primitive element type.
         #[inline]
-        pub fn ty(&self) -> PrimitiveTy {
+        pub const fn ty(&self) -> PrimitiveTy {
             self.ty
         }
     }

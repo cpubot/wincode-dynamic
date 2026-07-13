@@ -35,7 +35,8 @@ fn read_primitive_payload<'de>(
         .checked_mul(ty.size())
         .ok_or_else(|| read_length_encoding_overflow("usize::MAX"))?;
 
-    read_byte_payload(byte_len, reader).map(|payload| Value::Vec(LazyVec { ty, payload }))
+    read_byte_payload(byte_len, reader)
+        .and_then(|payload| Ok(Value::Vec(LazyVec::try_new(ty, payload)?)))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, SchemaRead, SchemaWrite)]
