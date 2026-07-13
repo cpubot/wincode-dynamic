@@ -17,7 +17,7 @@ front; the consumer reads it off the wire and reflects over everything that foll
 
 ```rust
 use wincode::{SchemaRead, SchemaWrite};
-use wincode_dynamic::{RootSchema, SchemaDynamic, SchemaRuntime};
+use wincode_dynamic::{Decoder, RootSchema, SchemaDynamic};
 
 #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
 struct Account {
@@ -36,10 +36,10 @@ let record = wincode::serialize(&Account {
 })?;
 
 // Consumer: never had the `Account` type at compile time. Read the schema off the wire...
-let runtime = SchemaRuntime::new(wincode::deserialize::<RootSchema>(&schema)?);
+let decoder = Decoder::new(wincode::deserialize::<RootSchema>(&schema)?);
 
 // ...and reflect over every record that follows.
-for field in runtime.fields(&record[..])? {
+for field in decoder.fields(&record[..])? {
     let field = field?;
     println!("{} = {:?}", field.name(), field.value());
 }

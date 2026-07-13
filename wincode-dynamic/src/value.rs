@@ -103,7 +103,7 @@ pub mod lazy_vec {
         ///
         /// ```
         /// use wincode::{ReadResult, SchemaRead, SchemaWrite};
-        /// use wincode_dynamic::{SchemaDynamic, SchemaRuntime, Value};
+        /// use wincode_dynamic::{Decoder, SchemaDynamic, Value};
         ///
         /// #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
         /// struct Message {
@@ -114,8 +114,8 @@ pub mod lazy_vec {
         ///     values: vec![10, 20, 30],
         /// })
         /// .expect("serialize message");
-        /// let runtime = SchemaRuntime::new(Message::schema());
-        /// let mut fields = runtime.fields(encoded.as_slice())?;
+        /// let decoder = Decoder::new(Message::schema());
+        /// let mut fields = decoder.fields(encoded.as_slice())?;
         ///
         /// let field = fields.next().expect("values field")?;
         /// assert_eq!(field.name(), "values");

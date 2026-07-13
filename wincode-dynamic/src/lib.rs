@@ -103,11 +103,11 @@ pub trait SchemaDynamic {
 }
 
 #[derive(Debug)]
-pub struct SchemaRuntime {
+pub struct Decoder {
     schema: RootSchema,
 }
 
-impl SchemaRuntime {
+impl Decoder {
     pub fn new(schema: RootSchema) -> Self {
         Self { schema }
     }
@@ -192,12 +192,12 @@ mod test {
     }
 
     fn assert_enum_message(
-        runtime: &SchemaRuntime,
+        decoder: &Decoder,
         message: &EnumMessage,
         expected: Vec<(&str, Ty, Option<usize>, Value<'_>)>,
     ) {
         let payload = wincode::serialize(message).unwrap();
-        let actual = runtime
+        let actual = decoder
             .fields(payload.as_slice())
             .unwrap()
             .collect::<ReadResult<Vec<_>>>()
@@ -234,10 +234,10 @@ mod test {
         };
 
         let schema = StructMessage::schema();
-        let dyn_parser = SchemaRuntime::new(schema);
+        let decoder = Decoder::new(schema);
 
         let payload = wincode::serialize(&message).unwrap();
-        let result = dyn_parser
+        let result = decoder
             .fields(&payload[..])
             .unwrap()
             .collect::<ReadResult<Vec<_>>>()
@@ -358,8 +358,8 @@ mod test {
         .unwrap();
         *payload.last_mut().unwrap() = 2;
 
-        let runtime = SchemaRuntime::new(Bools::schema());
-        let value = runtime
+        let decoder = Decoder::new(Bools::schema());
+        let value = decoder
             .fields(payload.as_slice())
             .unwrap()
             .next()
@@ -484,13 +484,13 @@ mod test {
         };
         assert_eq!(tag_encoding, PrimitiveTy::U8);
 
-        let runtime = SchemaRuntime::new(U8EnumMessage::schema());
+        let decoder = Decoder::new(U8EnumMessage::schema());
 
         let ping = wincode::serialize(&U8EnumMessage::Ping).unwrap();
-        assert_eq!(runtime.fields(ping.as_slice()).unwrap().count(), 0);
+        assert_eq!(decoder.fields(ping.as_slice()).unwrap().count(), 0);
 
         let value = wincode::serialize(&U8EnumMessage::Value(42)).unwrap();
-        let fields = runtime
+        let fields = decoder
             .fields(value.as_slice())
             .unwrap()
             .collect::<ReadResult<Vec<_>>>()
@@ -507,11 +507,11 @@ mod test {
 
     #[test]
     fn enum_roundtrips_every_variant_shape() {
-        let runtime = SchemaRuntime::new(EnumMessage::schema());
+        let decoder = Decoder::new(EnumMessage::schema());
 
-        assert_enum_message(&runtime, &EnumMessage::Ping, Vec::new());
+        assert_enum_message(&decoder, &EnumMessage::Ping, Vec::new());
         assert_enum_message(
-            &runtime,
+            &decoder,
             &EnumMessage::Coordinates(42, true),
             vec![
                 (
@@ -529,7 +529,7 @@ mod test {
             ],
         );
         assert_enum_message(
-            &runtime,
+            &decoder,
             &EnumMessage::Payload {
                 text: "hello".into(),
                 bytes: vec![1, 2, 3, 4],
@@ -555,10 +555,10 @@ mod test {
 
     #[test]
     fn enum_rejects_invalid_discriminant() {
-        let runtime = SchemaRuntime::new(EnumMessage::schema());
+        let decoder = Decoder::new(EnumMessage::schema());
         let payload = wincode::serialize(&u32::MAX).unwrap();
 
-        let error = match runtime.fields(payload.as_slice()) {
+        let error = match decoder.fields(payload.as_slice()) {
             Ok(_) => panic!("invalid discriminant unexpectedly parsed"),
             Err(error) => error,
         };
@@ -571,14 +571,14 @@ mod test {
 
     #[test]
     fn enum_reports_truncated_and_malformed_fields() {
-        let runtime = SchemaRuntime::new(EnumMessage::schema());
+        let decoder = Decoder::new(EnumMessage::schema());
 
         let truncated_discriminant = [0u8; 3];
-        assert!(runtime.fields(&truncated_discriminant[..]).is_err());
+        assert!(decoder.fields(&truncated_discriminant[..]).is_err());
 
         let mut truncated = wincode::serialize(&EnumMessage::Coordinates(42, true)).unwrap();
         truncated.pop();
-        let truncated_result = runtime
+        let truncated_result = decoder
             .fields(truncated.as_slice())
             .unwrap()
             .collect::<ReadResult<Vec<_>>>();
@@ -586,7 +586,7 @@ mod test {
 
         let mut malformed = wincode::serialize(&EnumMessage::Coordinates(42, true)).unwrap();
         *malformed.last_mut().unwrap() = 2;
-        let malformed_result = runtime
+        let malformed_result = decoder
             .fields(malformed.as_slice())
             .unwrap()
             .collect::<ReadResult<Vec<_>>>();
@@ -610,8 +610,8 @@ mod test {
             bytes: vec![5, 6, 7, 8],
         };
         let payload = wincode::serialize(&value).unwrap();
-        let runtime = SchemaRuntime::new(Borrowable::schema());
-        let fields = runtime
+        let decoder = Decoder::new(Borrowable::schema());
+        let fields = decoder
             .fields(payload.as_slice())
             .unwrap()
             .collect::<ReadResult<Vec<_>>>()
@@ -637,9 +637,9 @@ mod test {
             Item(T),
         }
 
-        let runtime = SchemaRuntime::new(Generic::<u64>::schema());
+        let decoder = Decoder::new(Generic::<u64>::schema());
         let payload = wincode::serialize(&Generic::Item(77u64)).unwrap();
-        let fields = runtime
+        let fields = decoder
             .fields(payload.as_slice())
             .unwrap()
             .collect::<ReadResult<Vec<_>>>()
@@ -655,15 +655,15 @@ mod test {
         );
 
         let empty_payload = wincode::serialize(&Generic::<u64>::Empty).unwrap();
-        assert_eq!(runtime.fields(empty_payload.as_slice()).unwrap().count(), 0);
+        assert_eq!(decoder.fields(empty_payload.as_slice()).unwrap().count(), 0);
     }
 
     proptest! {
         #[test]
         fn arbitrary_struct_fields_match(message in any::<StructMessage>()) {
             let payload = wincode::serialize(&message).unwrap();
-            let runtime = SchemaRuntime::new(StructMessage::schema());
-            let fields = runtime
+            let decoder = Decoder::new(StructMessage::schema());
+            let fields = decoder
                 .fields(payload.as_slice())
                 .unwrap()
                 .collect::<ReadResult<Vec<_>>>()
@@ -715,8 +715,8 @@ mod test {
         #[test]
         fn arbitrary_enum_fields_match(message in any::<EnumMessage>()) {
             let payload = wincode::serialize(&message).unwrap();
-            let runtime = SchemaRuntime::new(EnumMessage::schema());
-            let actual = runtime
+            let decoder = Decoder::new(EnumMessage::schema());
+            let actual = decoder
                 .fields(payload.as_slice())
                 .unwrap()
                 .collect::<ReadResult<Vec<_>>>()
@@ -745,8 +745,8 @@ mod test {
             let cut = cut_seed % payload.len();
             payload.truncate(cut);
 
-            let runtime = SchemaRuntime::new(StructMessage::schema());
-            let result = runtime
+            let decoder = Decoder::new(StructMessage::schema());
+            let result = decoder
                 .fields(payload.as_slice())
                 .and_then(|fields| fields.collect::<ReadResult<Vec<_>>>());
             prop_assert!(result.is_err());
@@ -768,8 +768,8 @@ mod test {
                         values: values.clone(),
                     };
                     let payload = wincode::serialize(&message).unwrap();
-                    let runtime = SchemaRuntime::new(Message::schema());
-                    let value = runtime
+                    let decoder = Decoder::new(Message::schema());
+                    let value = decoder
                         .fields(payload.as_slice())
                         .unwrap()
                         .next()
