@@ -106,6 +106,7 @@ where
                     let val = A::get(reader.by_ref())?;
                     let mapped = (f)(val);
                     unsafe { ptr.add(i).write(mapped) };
+                    unsafe { vec.set_len(i + 1) }
                 }
             }
             TypeMeta::Dynamic => {
@@ -113,11 +114,10 @@ where
                     let val = A::get(reader.by_ref())?;
                     let mapped = (f)(val);
                     unsafe { ptr.add(i).write(mapped) };
+                    unsafe { vec.set_len(i + 1) }
                 }
             }
         }
-
-        unsafe { vec.set_len(len) }
 
         dst.write(vec);
         Ok(())
