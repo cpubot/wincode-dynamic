@@ -21,3 +21,7 @@ std = ["alloc"]
 [dependencies]
 wincode = { version = "0.5.5", features = ["derive"] }
 wincode-dynamic-derive = { path = "../wincode-dynamic-derive" }
+
+[dev-dependencies]
+proptest = "1.11.0"
+proptest-derive = "0.8.0"

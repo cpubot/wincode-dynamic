@@ -1,11 +1,42 @@
 use {
-    crate::{Array, PrimitiveValue, Value},
+    crate::{LazyVec, Value},
     std::borrow::Cow,
     wincode::{
-        ReadResult, SchemaRead, SchemaReadContext, SchemaWrite, config::DefaultConfig,
-        context::Len, io::Reader,
+        ReadResult, SchemaRead, SchemaReadContext, SchemaWrite,
+        config::{Config, DefaultConfig},
+        context::Len,
+        error::read_length_encoding_overflow,
+        io::{BorrowKind, Reader},
+        len::SeqLen,
     },
 };
+
+type DefaultLengthEncoding = <DefaultConfig as Config>::LengthEncoding;
+
+#[inline]
+fn read_byte_payload<'de>(byte_len: usize, reader: impl Reader<'de>) -> ReadResult<Cow<'de, [u8]>> {
+    if !reader.supports_borrow(BorrowKind::Backing) {
+        <DefaultLengthEncoding as SeqLen<DefaultConfig>>::prealloc_check::<u8>(byte_len)?;
+    }
+
+    <Cow<'de, [u8]> as SchemaReadContext<'de, DefaultConfig, Len>>::get_with_context(
+        Len(byte_len),
+        reader,
+    )
+}
+
+#[inline]
+fn read_primitive_payload<'de>(
+    ty: PrimitiveTy,
+    len: usize,
+    reader: impl Reader<'de>,
+) -> ReadResult<Value<'de>> {
+    let byte_len = len
+        .checked_mul(ty.size())
+        .ok_or_else(|| read_length_encoding_overflow("usize::MAX"))?;
+
+    read_byte_payload(byte_len, reader).map(|payload| Value::Vec(LazyVec { ty, payload }))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, SchemaRead, SchemaWrite)]
 #[wincode(tag_encoding = "u8")]
@@ -28,6 +59,23 @@ impl PrimitiveTy {
     pub(crate) fn parse_into_usize<'de>(self, reader: impl Reader<'de>) -> ReadResult<usize> {
         <usize as SchemaReadContext<DefaultConfig, _>>::get_with_context(self, reader)
     }
+
+    #[inline]
+    pub const fn size(self) -> usize {
+        match self {
+            PrimitiveTy::U8 => 1,
+            PrimitiveTy::U16 => 2,
+            PrimitiveTy::U32 => 4,
+            PrimitiveTy::U64 => 8,
+            PrimitiveTy::I8 => 1,
+            PrimitiveTy::I16 => 2,
+            PrimitiveTy::I32 => 4,
+            PrimitiveTy::I64 => 8,
+            PrimitiveTy::F32 => 4,
+            PrimitiveTy::F64 => 8,
+            PrimitiveTy::Bool => 1,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, SchemaRead, SchemaWrite)]
@@ -41,37 +89,26 @@ pub enum Ty {
 
 impl Ty {
     #[inline]
-    pub fn parse<'de>(self, reader: impl Reader<'de>) -> ReadResult<Value<'de>> {
+    pub fn parse<'de>(self, mut reader: impl Reader<'de>) -> ReadResult<Value<'de>> {
         match self {
             Ty::PrimitiveTy(ty) => {
                 <Value as SchemaReadContext<DefaultConfig, _>>::get_with_context(ty, reader)
             }
             Ty::String => {
-                <Cow<str> as SchemaRead<'de, DefaultConfig>>::get(reader).map(Value::String)
+                <Cow<'de, str> as SchemaRead<'de, DefaultConfig>>::get(reader).map(Value::String)
             }
             Ty::Vec {
                 ty: PrimitiveTy::U8,
             } => <Cow<[u8]> as SchemaRead<'de, DefaultConfig>>::get(reader).map(Value::Bytes),
             Ty::Vec { ty } => {
-                <Vec<PrimitiveValue> as SchemaReadContext<'de, DefaultConfig, _>>::get_with_context(
-                    ty, reader,
-                )
-                .map(Value::Vec)
+                let len = <DefaultLengthEncoding as SeqLen<DefaultConfig>>::read(reader.by_ref())?;
+                read_primitive_payload(ty, len, reader)
             }
             Ty::Array {
                 ty: PrimitiveTy::U8,
                 len,
-            } => <Cow<[u8]> as SchemaReadContext<'de, DefaultConfig, Len>>::get_with_context(
-                Len(len),
-                reader,
-            )
-            .map(Value::Bytes),
-            Ty::Array { ty, len } => <Array<PrimitiveValue> as SchemaReadContext<
-                'de,
-                DefaultConfig,
-                _,
-            >>::get_with_context((Len(len), ty), reader)
-            .map(Value::Vec),
+            } => read_byte_payload(len, reader).map(Value::Bytes),
+            Ty::Array { ty, len } => read_primitive_payload(ty, len, reader),
         }
     }
 }

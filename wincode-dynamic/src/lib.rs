@@ -114,9 +114,9 @@ impl SchemaRuntime {
 
 #[cfg(test)]
 mod test {
-    use {super::*, std::borrow::Cow};
+    use {super::*, proptest::prelude::*, proptest_derive::Arbitrary, std::borrow::Cow};
 
-    #[derive(SchemaDynamic, SchemaRead, SchemaWrite, PartialEq, Debug)]
+    #[derive(Arbitrary, SchemaDynamic, SchemaRead, SchemaWrite, PartialEq, Debug)]
     #[wincode_dynamic(internal)]
     struct StructMessage {
         a: u64,
@@ -128,7 +128,7 @@ mod test {
         ar_bytes: [u8; 8],
     }
 
-    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[derive(Arbitrary, SchemaDynamic, SchemaRead, SchemaWrite, Debug)]
     #[wincode_dynamic(internal)]
     enum EnumMessage {
         Ping,
@@ -179,18 +179,139 @@ mod test {
             .unwrap()
             .collect::<ReadResult<Vec<_>>>()
             .unwrap();
+        let mut result = result.into_iter();
+
+        assert_eq!(result.next(), Some(Value::U64(42)));
+        assert_eq!(result.next(), Some(Value::Bool(true)));
+
+        let Some(Value::Vec(vals)) = result.next() else {
+            panic!("expected vals to be a lazy vector");
+        };
+        assert_eq!(vals.ty(), PrimitiveTy::U64);
+        assert_eq!(vals.len(), 4);
+        assert!(!vals.is_empty());
         assert_eq!(
-            result,
-            vec![
-                Value::U64(42),
-                Value::Bool(true),
-                Value::Vec(vec![PrimitiveValue::U64(333); 4]),
-                Value::String("hello world".into()),
-                Value::Bytes(vec![42; 8].into()),
-                Value::Vec(vec![PrimitiveValue::U64(444); 4]),
-                Value::Bytes(vec![43; 8].into()),
-            ]
-        )
+            vals.clone().into_dyn_vec().unwrap(),
+            vec![PrimitiveValue::U64(333); 4]
+        );
+        assert_eq!(
+            vals.clone()
+                .try_into_iter_as::<u64>()
+                .unwrap()
+                .collect::<ReadResult<Vec<_>>>()
+                .unwrap(),
+            vec![333; 4]
+        );
+        assert!(vals.try_into_iter_as::<u32>().is_err());
+
+        assert_eq!(result.next(), Some(Value::String("hello world".into())));
+        assert_eq!(result.next(), Some(Value::Bytes(vec![42; 8].into())));
+
+        let Some(Value::Vec(vals)) = result.next() else {
+            panic!("expected ar to be a lazy vector");
+        };
+        assert_eq!(
+            vals.try_into_iter_as::<u64>()
+                .unwrap()
+                .collect::<ReadResult<Vec<_>>>()
+                .unwrap(),
+            vec![444; 4]
+        );
+
+        assert_eq!(result.next(), Some(Value::Bytes(vec![43; 8].into())));
+        assert_eq!(result.next(), None);
+    }
+
+    #[test]
+    fn lazy_vector_reports_element_errors_during_iteration() {
+        #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+        #[wincode_dynamic(internal)]
+        struct Bools {
+            values: Vec<bool>,
+        }
+
+        let mut payload = wincode::serialize(&Bools {
+            values: vec![true, false],
+        })
+        .unwrap();
+        *payload.last_mut().unwrap() = 2;
+
+        let runtime = SchemaRuntime::new(Bools::schema());
+        let value = runtime
+            .fields(payload.as_slice())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let Value::Vec(values) = value else {
+            panic!("expected a lazy vector");
+        };
+
+        let error = values
+            .try_into_iter_as::<bool>()
+            .unwrap()
+            .collect::<ReadResult<Vec<_>>>()
+            .unwrap_err();
+        assert!(matches!(error, wincode::ReadError::InvalidBoolEncoding(2)));
+    }
+
+    #[test]
+    fn owned_lazy_payloads_enforce_the_byte_preallocation_limit() {
+        use wincode::{
+            config::{Config, DEFAULT_PREALLOCATION_SIZE_LIMIT, DefaultConfig},
+            io::Cursor,
+            len::SeqLen,
+        };
+
+        type LengthEncoding = <DefaultConfig as Config>::LengthEncoding;
+
+        let len = DEFAULT_PREALLOCATION_SIZE_LIMIT / PrimitiveTy::U64.size() + 1;
+        let mut encoded_len = Vec::new();
+        <LengthEncoding as SeqLen<DefaultConfig>>::write(&mut encoded_len, len).unwrap();
+
+        let vector_error = Ty::Vec {
+            ty: PrimitiveTy::U64,
+        }
+        .parse(Cursor::new(encoded_len))
+        .unwrap_err();
+        assert!(matches!(
+            vector_error,
+            wincode::ReadError::PreallocationSizeLimit { needed, limit }
+                if needed == len * PrimitiveTy::U64.size()
+                    && limit == DEFAULT_PREALLOCATION_SIZE_LIMIT
+        ));
+
+        let array_error = Ty::Array {
+            ty: PrimitiveTy::U64,
+            len,
+        }
+        .parse(Cursor::new(Vec::<u8>::new()))
+        .unwrap_err();
+        assert!(matches!(
+            array_error,
+            wincode::ReadError::PreallocationSizeLimit { needed, limit }
+                if needed == len * PrimitiveTy::U64.size()
+                    && limit == DEFAULT_PREALLOCATION_SIZE_LIMIT
+        ));
+    }
+
+    #[test]
+    fn dynamic_lazy_decode_enforces_its_allocation_limit() {
+        use wincode::config::DEFAULT_PREALLOCATION_SIZE_LIMIT;
+
+        let len = DEFAULT_PREALLOCATION_SIZE_LIMIT / size_of::<PrimitiveValue>() + 1;
+        let values = LazyVec {
+            ty: PrimitiveTy::U8,
+            payload: Cow::Owned(vec![0; len]),
+        };
+
+        let error = values.into_dyn_vec().unwrap_err();
+        assert!(matches!(
+            error,
+            wincode::ReadError::PreallocationSizeLimit { needed, limit }
+                if needed == len * size_of::<PrimitiveValue>()
+                    && limit == DEFAULT_PREALLOCATION_SIZE_LIMIT
+        ));
     }
 
     #[test]
@@ -376,4 +497,168 @@ mod test {
         let empty_payload = wincode::serialize(&Generic::<u64>::Empty).unwrap();
         assert_eq!(runtime.fields(empty_payload.as_slice()).unwrap().count(), 0);
     }
+
+    proptest! {
+        #[test]
+        fn arbitrary_struct_fields_match(message in any::<StructMessage>()) {
+            let payload = wincode::serialize(&message).unwrap();
+            let runtime = SchemaRuntime::new(StructMessage::schema());
+            let fields = runtime
+                .fields(payload.as_slice())
+                .unwrap()
+                .collect::<ReadResult<Vec<_>>>()
+                .unwrap();
+            let mut fields = fields.into_iter();
+
+            prop_assert_eq!(fields.next(), Some(Value::U64(message.a)));
+            prop_assert_eq!(fields.next(), Some(Value::Bool(message.b)));
+
+            let Some(Value::Vec(values)) = fields.next() else {
+                return Err(TestCaseError::fail("expected vals to be a lazy vector"));
+            };
+            prop_assert_eq!(values.len(), message.vals.len());
+            prop_assert_eq!(values.ty(), PrimitiveTy::U64);
+            let values = values
+                .try_into_iter_as::<u64>()
+                .unwrap()
+                .collect::<ReadResult<Vec<_>>>()
+                .unwrap();
+            prop_assert_eq!(values.as_slice(), message.vals.as_slice());
+
+            prop_assert_eq!(
+                fields.next(),
+                Some(Value::String(Cow::Borrowed(message.str.as_str())))
+            );
+            prop_assert_eq!(
+                fields.next(),
+                Some(Value::Bytes(Cow::Borrowed(message.bytes.as_slice())))
+            );
+
+            let Some(Value::Vec(values)) = fields.next() else {
+                return Err(TestCaseError::fail("expected ar to be a lazy vector"));
+            };
+            prop_assert_eq!(
+                values
+                    .try_into_iter_as::<u64>()
+                    .unwrap()
+                    .collect::<ReadResult<Vec<_>>>()
+                    .unwrap(),
+                message.ar
+            );
+            prop_assert_eq!(
+                fields.next(),
+                Some(Value::Bytes(Cow::Borrowed(message.ar_bytes.as_slice())))
+            );
+            prop_assert_eq!(fields.next(), None);
+        }
+
+        #[test]
+        fn arbitrary_enum_fields_match(message in any::<EnumMessage>()) {
+            let payload = wincode::serialize(&message).unwrap();
+            let runtime = SchemaRuntime::new(EnumMessage::schema());
+            let actual = runtime
+                .fields(payload.as_slice())
+                .unwrap()
+                .collect::<ReadResult<Vec<_>>>()
+                .unwrap();
+            let expected = match &message {
+                EnumMessage::Ping => Vec::new(),
+                EnumMessage::Coordinates(x, y) => vec![Value::U64(*x), Value::Bool(*y)],
+                EnumMessage::Payload { text, bytes } => vec![
+                    Value::String(Cow::Borrowed(text.as_str())),
+                    Value::Bytes(Cow::Borrowed(bytes.as_slice())),
+                ],
+            };
+
+            prop_assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn arbitrary_truncated_struct_is_rejected(
+            message in any::<StructMessage>(),
+            cut_seed in any::<usize>(),
+        ) {
+            let mut payload = wincode::serialize(&message).unwrap();
+            let cut = cut_seed % payload.len();
+            payload.truncate(cut);
+
+            let runtime = SchemaRuntime::new(StructMessage::schema());
+            let result = runtime
+                .fields(payload.as_slice())
+                .and_then(|fields| fields.collect::<ReadResult<Vec<_>>>());
+            prop_assert!(result.is_err());
+        }
+    }
+
+    macro_rules! primitive_vector_property {
+        ($name:ident, $ty:ty, $variant:path, $strategy:expr) => {
+            proptest! {
+                #[test]
+                fn $name(values in proptest::collection::vec($strategy, 0..64)) {
+                    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+                    #[wincode_dynamic(internal)]
+                    struct Message {
+                        values: Vec<$ty>,
+                    }
+
+                    let message = Message {
+                        values: values.clone(),
+                    };
+                    let payload = wincode::serialize(&message).unwrap();
+                    let runtime = SchemaRuntime::new(Message::schema());
+                    let value = runtime
+                        .fields(payload.as_slice())
+                        .unwrap()
+                        .next()
+                        .unwrap()
+                        .unwrap();
+                    let Value::Vec(lazy) = value else {
+                        return Err(TestCaseError::fail("expected a lazy vector"));
+                    };
+
+                    prop_assert_eq!(lazy.len(), values.len());
+                    prop_assert_eq!(lazy.is_empty(), values.is_empty());
+                    prop_assert!(matches!(lazy.payload, Cow::Borrowed(_)));
+                    prop_assert_eq!(
+                        lazy.clone().into_dyn_vec().unwrap(),
+                        values.iter().copied().map($variant).collect::<Vec<_>>()
+                    );
+                    prop_assert_eq!(
+                        lazy
+                            .try_into_iter_as::<$ty>()
+                            .unwrap()
+                            .collect::<ReadResult<Vec<_>>>()
+                            .unwrap(),
+                        values
+                    );
+                }
+            }
+        };
+    }
+
+    primitive_vector_property!(arbitrary_u16_vector, u16, PrimitiveValue::U16, any::<u16>());
+    primitive_vector_property!(arbitrary_u32_vector, u32, PrimitiveValue::U32, any::<u32>());
+    primitive_vector_property!(arbitrary_u64_vector, u64, PrimitiveValue::U64, any::<u64>());
+    primitive_vector_property!(arbitrary_i8_vector, i8, PrimitiveValue::I8, any::<i8>());
+    primitive_vector_property!(arbitrary_i16_vector, i16, PrimitiveValue::I16, any::<i16>());
+    primitive_vector_property!(arbitrary_i32_vector, i32, PrimitiveValue::I32, any::<i32>());
+    primitive_vector_property!(arbitrary_i64_vector, i64, PrimitiveValue::I64, any::<i64>());
+    primitive_vector_property!(
+        arbitrary_bool_vector,
+        bool,
+        PrimitiveValue::Bool,
+        any::<bool>()
+    );
+    primitive_vector_property!(
+        arbitrary_f32_vector,
+        f32,
+        PrimitiveValue::F32,
+        -1.0e20f32..1.0e20f32
+    );
+    primitive_vector_property!(
+        arbitrary_f64_vector,
+        f64,
+        PrimitiveValue::F64,
+        -1.0e100f64..1.0e100f64
+    );
 }
