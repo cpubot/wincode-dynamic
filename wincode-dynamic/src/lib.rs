@@ -96,6 +96,21 @@ impl Schema {
             size: size.into(),
         }
     }
+
+    #[inline]
+    pub const fn size(&self) -> Option<usize> {
+        self.size
+    }
+
+    #[inline]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[inline]
+    pub const fn field_defs(&self) -> &[FieldDef] {
+        &self.fields
+    }
 }
 
 pub trait SchemaDynamic {
@@ -112,6 +127,7 @@ impl Decoder {
         Self { schema }
     }
 
+    #[inline]
     pub fn name(&self) -> &str {
         match &self.schema {
             RootSchema::Struct(schema) => &schema.name,
@@ -119,7 +135,8 @@ impl Decoder {
         }
     }
 
-    pub fn size(&self) -> Option<usize> {
+    #[inline]
+    pub const fn size(&self) -> Option<usize> {
         match &self.schema {
             RootSchema::Struct(schema) => schema.size,
             RootSchema::Enum { size, .. } => *size,
