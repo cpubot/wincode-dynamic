@@ -140,11 +140,14 @@ pub mod lazy_vec {
                 return Err(ty_mismatch());
             }
 
+            #[cold]
+            fn invalid_length() -> ReadError {
+                ReadError::Custom("lazy vector payload has an invalid length")
+            }
+
             let element_size = size_of::<As>();
             if element_size == 0 || !self.payload.len().is_multiple_of(element_size) {
-                return Err(ReadError::Custom(
-                    "lazy vector payload has an invalid length",
-                ));
+                return Err(invalid_length());
             }
             Ok(IntoIter {
                 len: self.payload.len() / element_size,
