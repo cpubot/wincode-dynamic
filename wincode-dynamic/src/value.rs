@@ -77,31 +77,15 @@ pub mod lazy_vec {
     }
 
     impl<'a> LazyVec<'a> {
-        /// Creates a lazy vector from an encoded primitive payload.
+        /// # Safety
         ///
-        /// The element count is derived from the payload length and the width of
-        /// `ty`. The payload is retained without decoding or copying it.
-        ///
-        /// # Errors
-        ///
-        /// Returns an error if the payload length is not an exact multiple of the
-        /// element width.
-        #[inline]
-        pub(crate) fn try_new(ty: PrimitiveTy, payload: Cow<'a, [u8]>) -> ReadResult<Self> {
-            #[cold]
-            const fn invalid_length() -> ReadError {
-                ReadError::Custom("lazy vector payload has an invalid length")
-            }
-
-            let element_size = ty.size();
-            if !payload.len().is_multiple_of(element_size) {
-                return Err(invalid_length());
-            }
-            Ok(Self {
-                ty,
-                len: payload.len() / element_size,
-                payload,
-            })
+        /// `payload.len()` must equal `len * ty.size()`.
+        pub(crate) unsafe fn new_unchecked(
+            ty: PrimitiveTy,
+            len: usize,
+            payload: Cow<'a, [u8]>,
+        ) -> Self {
+            Self { ty, len, payload }
         }
 
         /// Converts this vector into a lazy iterator of `As` values.

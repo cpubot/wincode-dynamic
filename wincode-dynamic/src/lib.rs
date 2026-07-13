@@ -439,7 +439,10 @@ mod test {
         use wincode::config::DEFAULT_PREALLOCATION_SIZE_LIMIT;
 
         let len = DEFAULT_PREALLOCATION_SIZE_LIMIT / size_of::<PrimitiveValue>() + 1;
-        let values = LazyVec::try_new(PrimitiveTy::U8, Cow::Owned(vec![0; len])).unwrap();
+        // SAFETY: `PrimitiveTy::U8` has an element width of one byte, so the
+        // payload contains exactly `len` elements.
+        let values =
+            unsafe { LazyVec::new_unchecked(PrimitiveTy::U8, len, Cow::Owned(vec![0; len])) };
 
         let error = values.into_dyn_vec().unwrap_err();
         assert!(matches!(
