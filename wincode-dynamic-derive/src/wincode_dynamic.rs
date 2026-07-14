@@ -89,7 +89,7 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
             quote! {
                 #crate_name::RootSchema::Struct(#crate_name::Schema::new(
                     stringify!(#ident),
-                    Vec::from([#(#f),*]).into_boxed_slice(),
+                    [#(#f),*].into(),
                     match <#ident #ty_generics as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
                         wincode::TypeMeta::Static { size, .. } => Some(size),
                         _ => None,
@@ -120,7 +120,7 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
                 quote! {
                     #crate_name::Schema::new(
                         stringify!(#variant_ident),
-                        Vec::from([#(#fields),*]).into_boxed_slice(),
+                        [#(#fields),*].into(),
                         Some(0usize)#(#field_sizes)*,
                     )
                 }
@@ -139,7 +139,7 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
             quote! {
                 #crate_name::RootSchema::Enum {
                     name: stringify!(#ident).into(),
-                    variants: Vec::from([#(#variants),*]).into_boxed_slice(),
+                    variants: [#(#variants),*].into(),
                     size: match <#ident #ty_generics as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
                         wincode::TypeMeta::Static { size, .. } => Some(size),
                         wincode::TypeMeta::Dynamic => None,

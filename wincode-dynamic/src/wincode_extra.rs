@@ -2,7 +2,8 @@
 //!
 
 use {
-    std::mem::MaybeUninit,
+    alloc::vec::Vec,
+    core::{marker::PhantomData, mem::MaybeUninit},
     wincode::{
         ReadResult, SchemaRead, SchemaReadContext, TypeMeta,
         config::{Config, DefaultConfig},
@@ -18,7 +19,7 @@ use {
 // TODO: upstream
 pub(crate) struct Map<A, F> {
     f: F,
-    _marker: std::marker::PhantomData<A>,
+    _marker: PhantomData<A>,
 }
 
 impl<A, F> Map<A, F> {
@@ -28,7 +29,7 @@ impl<A, F> Map<A, F> {
     {
         Self {
             f,
-            _marker: std::marker::PhantomData,
+            _marker: PhantomData,
         }
     }
 }
@@ -53,7 +54,7 @@ where
             LenMap {
                 len,
                 f: ctx.f,
-                _marker: std::marker::PhantomData,
+                _marker: PhantomData,
             },
             reader,
             dst,
@@ -64,7 +65,7 @@ where
 pub(crate) struct LenMap<A, F> {
     len: usize,
     f: F,
-    _marker: std::marker::PhantomData<A>,
+    _marker: PhantomData<A>,
 }
 
 impl<A, F> LenMap<A, F> {
@@ -75,7 +76,7 @@ impl<A, F> LenMap<A, F> {
         Self {
             len,
             f,
-            _marker: std::marker::PhantomData,
+            _marker: PhantomData,
         }
     }
 }

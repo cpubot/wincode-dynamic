@@ -1,6 +1,6 @@
 use {
     crate::{LazyVec, Value},
-    std::borrow::Cow,
+    alloc::{borrow::Cow, string::String, vec::Vec},
     wincode::{
         ReadResult, SchemaRead, SchemaReadContext, SchemaWrite,
         config::{Config, DefaultConfig},

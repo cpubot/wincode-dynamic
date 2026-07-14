@@ -1,5 +1,9 @@
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(not(feature = "std"), no_std)]
+extern crate alloc;
+
 use {
-    std::borrow::Cow,
+    alloc::{borrow::Cow, boxed::Box, string::String},
     wincode::{ReadResult, SchemaRead, SchemaWrite, error::invalid_tag_encoding, io::Reader},
 };
 
@@ -176,9 +180,9 @@ impl Decoder {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod test {
-    use {super::*, proptest::prelude::*, proptest_derive::Arbitrary, std::borrow::Cow};
+    use {super::*, proptest::prelude::*, proptest_derive::Arbitrary};
 
     #[derive(Arbitrary, SchemaDynamic, SchemaRead, SchemaWrite, PartialEq, Debug)]
     #[wincode_dynamic(internal)]

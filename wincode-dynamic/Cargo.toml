@@ -15,11 +15,10 @@ rustdoc-args = ["--cfg", "docsrs", "-D", "warnings"]
 
 [features]
 default = ["std"]
-alloc = []
-std = ["alloc"]
+std = ["wincode/std"]
 
 [dependencies]
-wincode = { version = "0.5.5", features = ["derive"] }
+wincode = { version = "0.5.5", features = ["derive", "alloc"], default-features = false }
 wincode-dynamic-derive = { path = "../wincode-dynamic-derive" }
 
 [dev-dependencies]

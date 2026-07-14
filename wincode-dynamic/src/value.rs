@@ -3,8 +3,8 @@ use {
         PrimitiveTy,
         wincode_extra::{LenMap, Map},
     },
-    core::mem::MaybeUninit,
-    std::borrow::Cow,
+    alloc::{borrow::Cow, vec::Vec},
+    core::{marker::PhantomData, mem::MaybeUninit},
     wincode::{
         ReadError, ReadResult, SchemaRead, SchemaReadContext,
         config::{Config, ConfigCore, DefaultConfig},
@@ -73,7 +73,7 @@ pub mod lazy_vec {
         payload: Cow<'a, [u8]>,
         len: usize,
         index: usize,
-        _marker: std::marker::PhantomData<As>,
+        _marker: PhantomData<As>,
     }
 
     impl<'a> LazyVec<'a> {
@@ -162,7 +162,7 @@ pub mod lazy_vec {
                 len: self.len,
                 payload: self.payload,
                 index: 0,
-                _marker: std::marker::PhantomData,
+                _marker: PhantomData,
             })
         }
 
@@ -195,7 +195,7 @@ pub mod lazy_vec {
             self.payload.is_empty()
         }
 
-        #[cfg(test)]
+        #[cfg(all(test, feature = "std"))]
         pub(crate) fn has_borrowed_payload(&self) -> bool {
             matches!(self.payload, Cow::Borrowed(_))
         }
