@@ -10,7 +10,9 @@ use {
 mod ty;
 mod value;
 mod wincode_extra;
-pub use {ty::*, value::*, wincode_dynamic_derive::*};
+#[cfg(feature = "derive")]
+pub use wincode_dynamic_derive::*;
+pub use {ty::*, value::*};
 
 #[derive(SchemaRead, SchemaWrite, Debug, Clone)]
 pub struct FieldDef {

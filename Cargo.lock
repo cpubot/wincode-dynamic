@@ -409,6 +409,7 @@ dependencies = [
  "proptest",
  "proptest-derive",
  "wincode",
+ "wincode-dynamic",
  "wincode-dynamic-derive",
 ]
 

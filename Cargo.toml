@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 authors = ["Anza Maintainers <maintainers@anza.xyz>"]
-repository = "https://github.com/anza-xyz/wincode"
+repository = "https://github.com/cpubot/wincode-dynamic"
 homepage = "https://anza.xyz/"
 license = "Apache-2.0"
 edition = "2024"
