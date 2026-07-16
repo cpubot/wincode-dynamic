@@ -32,14 +32,14 @@ fn field_to_tokens(crate_name: &Path, field: &Field, index: usize) -> TokenStrea
     };
 
     quote! {
-       #crate_name::FieldDef::new(
-           #name,
-           <#ty as #crate_name::DynTy>::TYPE,
-           match <#ty as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
-               wincode::TypeMeta::Static { size, .. } => Some(size),
-               _ => None,
-           }
-       )
+        #crate_name::FieldDef {
+            name: #name,
+            ty: <#ty as #crate_name::DynTy>::TYPE,
+            size: match <#ty as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
+                wincode::TypeMeta::Static { size, .. } => Some(size),
+                _ => None,
+            },
+        }
     }
 }
 
@@ -81,51 +81,59 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
 
     let schema = match &args.data {
         Data::Struct(fields) => {
-            let f = fields
+            let fields = fields
                 .iter()
                 .enumerate()
                 .map(|(index, field)| field_to_tokens(&crate_name, field, index));
 
             quote! {
-                #crate_name::RootSchema::Struct(#crate_name::Schema::new(
-                    stringify!(#ident),
-                    [#(#f),*].into(),
-                    match <#ident #ty_generics as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
+                #crate_name::RootSchema::Struct(#crate_name::Schema {
+                    name: stringify!(#ident),
+                    fields: #crate_name::SchemaSlice::Borrowed(&[#(#fields),*]),
+                    size: match <#ident #ty_generics as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
                         wincode::TypeMeta::Static { size, .. } => Some(size),
                         _ => None,
-                    }
-                ))
+                    },
+                })
             }
         }
         Data::Enum(variants) => {
-            let variants = variants.iter().map(|variant| {
-                let variant_ident = &variant.ident;
-                let fields = variant
-                    .fields
-                    .iter()
-                    .enumerate()
-                    .map(|(index, field)| field_to_tokens(&crate_name, field, index));
-                let field_sizes = variant.fields.iter().map(|field| {
-                    let ty = &field.ty;
-                    quote! {
-                        .and_then(|total| {
-                            match <#ty as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
-                                wincode::TypeMeta::Static { size, .. } => total.checked_add(size),
-                                wincode::TypeMeta::Dynamic => None,
+            let variants = variants
+                .iter()
+                .map(|variant| {
+                    let variant_ident = &variant.ident;
+                    let fields = variant
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .map(|(index, field)| field_to_tokens(&crate_name, field, index));
+                    let size = variant
+                        .fields
+                        .iter()
+                        .fold(quote!(Some(0usize)), |size, field| {
+                            let ty = &field.ty;
+                            quote! {
+                                match #size {
+                                    Some(total) => {
+                                        match <#ty as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
+                                            wincode::TypeMeta::Static { size, .. } => total.checked_add(size),
+                                            wincode::TypeMeta::Dynamic => None,
+                                        }
+                                    }
+                                    None => None,
+                                }
                             }
-                        })
+                        });
+
+                    quote! {
+                        #crate_name::Schema {
+                            name: stringify!(#variant_ident),
+                            fields: #crate_name::SchemaSlice::Borrowed(&[#(#fields),*]),
+                            size: #size,
+                        }
                     }
-                });
-
-                quote! {
-                    #crate_name::Schema::new(
-                        stringify!(#variant_ident),
-                        [#(#fields),*].into(),
-                        Some(0usize)#(#field_sizes)*,
-                    )
-                }
-            });
-
+                })
+                .collect::<Vec<_>>();
             let tag_encoding = args
                 .tag_encoding
                 .as_ref()
@@ -138,11 +146,11 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
 
             quote! {
                 #crate_name::RootSchema::Enum {
-                    name: stringify!(#ident).into(),
-                    variants: [#(#variants),*].into(),
+                    name: stringify!(#ident),
+                    variants: #crate_name::SchemaSlice::Borrowed(&[#(#variants),*]),
                     size: match <#ident #ty_generics as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
-                        wincode::TypeMeta::Static { size, .. } => Some(size),
-                        wincode::TypeMeta::Dynamic => None,
+                            wincode::TypeMeta::Static { size, .. } => Some(size),
+                            wincode::TypeMeta::Dynamic => None,
                     },
                     tag_encoding: <#tag_encoding as #crate_name::DynPrimitiveTy>::TYPE,
                 }
@@ -153,10 +161,7 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
     Ok(quote! {
         const _: () = {
             impl #impl_generics #crate_name::SchemaDynamic for #ident #ty_generics #where_clause {
-                #[inline]
-                fn schema() -> #crate_name::RootSchema {
-                   #schema
-                }
+                const SCHEMA: #crate_name::RootSchema<'static> = #schema;
             }
         };
     })

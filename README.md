@@ -27,7 +27,7 @@ struct Account {
 }
 
 // Producer: announce the schema once, up front...
-let schema = wincode::serialize(&Account::schema())?;
+let schema = wincode::serialize(&Account::SCHEMA)?;
 // ...then stream values encoded with plain `wincode`.
 let record = wincode::serialize(&Account {
     lamports: 42,

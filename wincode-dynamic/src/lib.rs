@@ -3,7 +3,8 @@
 extern crate alloc;
 
 use {
-    alloc::{borrow::Cow, boxed::Box, string::String},
+    alloc::boxed::Box,
+    core::ops::Deref,
     wincode::{ReadResult, SchemaRead, SchemaWrite, error::invalid_tag_encoding, io::Reader},
 };
 
@@ -12,18 +13,88 @@ mod value;
 mod wincode_extra;
 #[cfg(feature = "derive")]
 pub use wincode_dynamic_derive::*;
-pub use {ty::*, value::*};
+pub use {
+    ty::*,
+    value::*,
+    wincode_extra::lazy_slice::{LazySlice, LazySliceIter},
+};
 
-#[derive(SchemaRead, SchemaWrite, Debug, Clone)]
-pub struct FieldDef {
-    name: String,
-    ty: Ty,
-    size: Option<usize>,
+#[derive(Debug, Clone)]
+pub enum SchemaSlice<'a, T> {
+    Borrowed(&'a [T]),
+    Owned(Box<[T]>),
+}
+
+impl<'a, T> SchemaSlice<'a, T> {
+    const fn borrowed(values: &'a [T]) -> Self {
+        Self::Borrowed(values)
+    }
+
+    pub fn as_slice(&self) -> &[T] {
+        match self {
+            Self::Borrowed(values) => values,
+            Self::Owned(values) => values,
+        }
+    }
+}
+
+impl<T> AsRef<[T]> for SchemaSlice<'_, T> {
+    fn as_ref(&self) -> &[T] {
+        self.as_slice()
+    }
+}
+
+impl<T> Deref for SchemaSlice<'_, T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+unsafe impl<T, C> SchemaWrite<C> for SchemaSlice<'_, T>
+where
+    C: wincode::config::Config,
+    T: SchemaWrite<C, Src = T>,
+{
+    type Src = Self;
+
+    fn size_of(src: &Self::Src) -> wincode::WriteResult<usize> {
+        <[T] as SchemaWrite<C>>::size_of(src)
+    }
+
+    fn write(writer: impl wincode::io::Writer, src: &Self::Src) -> wincode::WriteResult<()> {
+        <[T] as SchemaWrite<C>>::write(writer, src)
+    }
+}
+
+unsafe impl<'de, T, C> SchemaRead<'de, C> for SchemaSlice<'de, T>
+where
+    C: wincode::config::Config,
+    T: SchemaRead<'de, C, Dst = T>,
+{
+    type Dst = Self;
+
+    fn read(
+        reader: impl Reader<'de>,
+        dst: &mut core::mem::MaybeUninit<Self::Dst>,
+    ) -> ReadResult<()> {
+        let values = <Box<[T]> as SchemaRead<'de, C>>::get(reader)?;
+        dst.write(Self::Owned(values));
+        Ok(())
+    }
+}
+
+#[derive(SchemaRead, SchemaWrite, Debug, Clone, Copy)]
+pub struct FieldDef<'a> {
+    pub name: &'a str,
+    pub ty: Ty,
+    pub size: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Field<'meta, 'data> {
-    name: Cow<'meta, str>,
+    name: &'meta str,
     ty: Ty,
     size: Option<usize>,
     value: Value<'data>,
@@ -32,7 +103,7 @@ pub struct Field<'meta, 'data> {
 impl<'meta, 'data> Field<'meta, 'data> {
     #[inline]
     pub fn name(&self) -> &str {
-        &self.name
+        self.name
     }
 
     #[inline]
@@ -56,15 +127,7 @@ impl<'meta, 'data> Field<'meta, 'data> {
     }
 }
 
-impl FieldDef {
-    pub fn new(name: impl Into<String>, ty: Ty, size: impl Into<Option<usize>>) -> Self {
-        Self {
-            name: name.into(),
-            ty,
-            size: size.into(),
-        }
-    }
-
+impl<'a> FieldDef<'a> {
     #[inline]
     pub fn parse<'de>(&self, reader: impl Reader<'de>) -> ReadResult<Value<'de>> {
         self.ty.parse(reader)
@@ -73,33 +136,29 @@ impl FieldDef {
 
 #[derive(SchemaRead, SchemaWrite, Debug, Clone)]
 #[wincode(tag_encoding = "u8")]
-pub enum RootSchema {
-    Struct(Schema),
+pub enum RootSchema<'a> {
+    Struct(Schema<'a>),
     Enum {
-        variants: Box<[Schema]>,
+        variants: SchemaSlice<'a, Schema<'a>>,
         size: Option<usize>,
-        name: String,
+        name: &'a str,
         tag_encoding: PrimitiveTy,
     },
 }
 
 #[derive(SchemaRead, SchemaWrite, Debug, Clone)]
-pub struct Schema {
-    name: String,
-    fields: Box<[FieldDef]>,
-    size: Option<usize>,
+pub struct Schema<'a> {
+    pub name: &'a str,
+    pub fields: SchemaSlice<'a, FieldDef<'a>>,
+    pub size: Option<usize>,
 }
 
-impl Schema {
-    pub fn new(
-        name: impl Into<String>,
-        fields: Box<[FieldDef]>,
-        size: impl Into<Option<usize>>,
-    ) -> Self {
+impl<'a> Schema<'a> {
+    pub const fn new(name: &'a str, fields: &'a [FieldDef<'a>], size: Option<usize>) -> Self {
         Self {
-            name: name.into(),
-            fields,
-            size: size.into(),
+            name,
+            fields: SchemaSlice::borrowed(fields),
+            size,
         }
     }
 
@@ -110,33 +169,49 @@ impl Schema {
 
     #[inline]
     pub fn name(&self) -> &str {
-        &self.name
+        self.name
     }
 
     #[inline]
-    pub const fn field_defs(&self) -> &[FieldDef] {
-        &self.fields
+    pub fn field_defs(&self) -> &[FieldDef<'a>] {
+        self.fields.as_slice()
+    }
+}
+
+impl<'a> RootSchema<'a> {
+    pub const fn new_enum(
+        name: &'a str,
+        variants: &'a [Schema<'a>],
+        size: Option<usize>,
+        tag_encoding: PrimitiveTy,
+    ) -> Self {
+        Self::Enum {
+            variants: SchemaSlice::borrowed(variants),
+            size,
+            name,
+            tag_encoding,
+        }
     }
 }
 
 pub trait SchemaDynamic {
-    fn schema() -> RootSchema;
+    const SCHEMA: RootSchema<'static>;
 }
 
 #[derive(Debug)]
-pub struct Decoder {
-    schema: RootSchema,
+pub struct Decoder<'a> {
+    schema: RootSchema<'a>,
 }
 
-impl Decoder {
-    pub fn new(schema: RootSchema) -> Self {
+impl<'a> Decoder<'a> {
+    pub fn new(schema: RootSchema<'a>) -> Self {
         Self { schema }
     }
 
     #[inline]
     pub fn name(&self) -> &str {
         match &self.schema {
-            RootSchema::Struct(schema) => &schema.name,
+            RootSchema::Struct(schema) => schema.name,
             RootSchema::Enum { name, .. } => name,
         }
     }
@@ -150,10 +225,10 @@ impl Decoder {
     }
 
     #[inline]
-    pub fn fields<'a, 'de>(
-        &'a self,
-        mut reader: impl Reader<'de> + 'a,
-    ) -> ReadResult<impl Iterator<Item = ReadResult<Field<'a, 'de>>> + 'a> {
+    pub fn fields<'b, 'de>(
+        &'b self,
+        mut reader: impl Reader<'de> + 'b,
+    ) -> ReadResult<impl Iterator<Item = ReadResult<Field<'b, 'de>>> + 'b> {
         let fields = match &self.schema {
             RootSchema::Struct(schema) => &schema.fields,
             RootSchema::Enum {
@@ -173,7 +248,7 @@ impl Decoder {
         Ok(fields.iter().map(move |field| {
             let value = field.parse(reader.by_ref())?;
             Ok(Field {
-                name: Cow::Borrowed(&field.name),
+                name: field.name,
                 ty: field.ty,
                 size: field.size,
                 value,
@@ -184,7 +259,7 @@ impl Decoder {
 
 #[cfg(all(test, feature = "std"))]
 mod test {
-    use {super::*, proptest::prelude::*, proptest_derive::Arbitrary};
+    use {super::*, alloc::borrow::Cow, proptest::prelude::*, proptest_derive::Arbitrary};
 
     #[derive(Arbitrary, SchemaDynamic, SchemaRead, SchemaWrite, PartialEq, Debug)]
     #[wincode_dynamic(internal)]
@@ -256,7 +331,7 @@ mod test {
             ar_bytes: [43; 8],
         };
 
-        let schema = StructMessage::schema();
+        let schema = StructMessage::SCHEMA;
         let decoder = Decoder::new(schema);
 
         let payload = wincode::serialize(&message).unwrap();
@@ -381,7 +456,7 @@ mod test {
         .unwrap();
         *payload.last_mut().unwrap() = 2;
 
-        let decoder = Decoder::new(Bools::schema());
+        let decoder = Decoder::new(Bools::SCHEMA);
         let value = decoder
             .fields(payload.as_slice())
             .unwrap()
@@ -466,7 +541,7 @@ mod test {
             variants,
             size,
             tag_encoding,
-        } = EnumMessage::schema()
+        } = EnumMessage::SCHEMA
         else {
             panic!("expected an enum schema");
         };
@@ -501,13 +576,33 @@ mod test {
     }
 
     #[test]
+    fn schema_serialization_roundtrips_borrowed_metadata() {
+        let encoded = wincode::serialize(&EnumMessage::SCHEMA).unwrap();
+        let schema: RootSchema<'_> = wincode::deserialize(encoded.as_slice()).unwrap();
+        let RootSchema::Enum { name, variants, .. } = schema else {
+            panic!("expected an enum schema");
+        };
+
+        assert_eq!(name, "EnumMessage");
+        assert_eq!(variants.len(), 3);
+        assert!(matches!(&variants, SchemaSlice::Owned(_)));
+        assert_eq!(variants[1].name, "Coordinates");
+        assert_eq!(variants[1].fields[0].name, "0");
+        assert_eq!(variants[2].fields[0].name, "text");
+
+        let field_name = variants[2].fields[0].name;
+        let encoded_range = encoded.as_ptr() as usize..encoded.as_ptr() as usize + encoded.len();
+        assert!(encoded_range.contains(&(field_name.as_ptr() as usize)));
+    }
+
+    #[test]
     fn enum_with_u8_tag_encoding_roundtrips() {
-        let RootSchema::Enum { tag_encoding, .. } = U8EnumMessage::schema() else {
+        let RootSchema::Enum { tag_encoding, .. } = U8EnumMessage::SCHEMA else {
             panic!("expected an enum schema");
         };
         assert_eq!(tag_encoding, PrimitiveTy::U8);
 
-        let decoder = Decoder::new(U8EnumMessage::schema());
+        let decoder = Decoder::new(U8EnumMessage::SCHEMA);
 
         let ping = wincode::serialize(&U8EnumMessage::Ping).unwrap();
         assert_eq!(decoder.fields(ping.as_slice()).unwrap().count(), 0);
@@ -530,7 +625,7 @@ mod test {
 
     #[test]
     fn enum_roundtrips_every_variant_shape() {
-        let decoder = Decoder::new(EnumMessage::schema());
+        let decoder = Decoder::new(EnumMessage::SCHEMA);
 
         assert_enum_message(&decoder, &EnumMessage::Ping, Vec::new());
         assert_enum_message(
@@ -578,7 +673,7 @@ mod test {
 
     #[test]
     fn enum_rejects_invalid_discriminant() {
-        let decoder = Decoder::new(EnumMessage::schema());
+        let decoder = Decoder::new(EnumMessage::SCHEMA);
         let payload = wincode::serialize(&u32::MAX).unwrap();
 
         let error = match decoder.fields(payload.as_slice()) {
@@ -594,7 +689,7 @@ mod test {
 
     #[test]
     fn enum_reports_truncated_and_malformed_fields() {
-        let decoder = Decoder::new(EnumMessage::schema());
+        let decoder = Decoder::new(EnumMessage::SCHEMA);
 
         let truncated_discriminant = [0u8; 3];
         assert!(decoder.fields(&truncated_discriminant[..]).is_err());
@@ -633,7 +728,7 @@ mod test {
             bytes: vec![5, 6, 7, 8],
         };
         let payload = wincode::serialize(&value).unwrap();
-        let decoder = Decoder::new(Borrowable::schema());
+        let decoder = Decoder::new(Borrowable::SCHEMA);
         let fields = decoder
             .fields(payload.as_slice())
             .unwrap()
@@ -660,7 +755,8 @@ mod test {
             Item(T),
         }
 
-        let decoder = Decoder::new(Generic::<u64>::schema());
+        const SCHEMA: RootSchema<'static> = Generic::<u64>::SCHEMA;
+        let decoder = Decoder::new(SCHEMA);
         let payload = wincode::serialize(&Generic::Item(77u64)).unwrap();
         let fields = decoder
             .fields(payload.as_slice())
@@ -685,7 +781,7 @@ mod test {
         #[test]
         fn arbitrary_struct_fields_match(message in any::<StructMessage>()) {
             let payload = wincode::serialize(&message).unwrap();
-            let decoder = Decoder::new(StructMessage::schema());
+            let decoder = Decoder::new(StructMessage::SCHEMA);
             let fields = decoder
                 .fields(payload.as_slice())
                 .unwrap()
@@ -738,7 +834,7 @@ mod test {
         #[test]
         fn arbitrary_enum_fields_match(message in any::<EnumMessage>()) {
             let payload = wincode::serialize(&message).unwrap();
-            let decoder = Decoder::new(EnumMessage::schema());
+            let decoder = Decoder::new(EnumMessage::SCHEMA);
             let actual = decoder
                 .fields(payload.as_slice())
                 .unwrap()
@@ -768,7 +864,7 @@ mod test {
             let cut = cut_seed % payload.len();
             payload.truncate(cut);
 
-            let decoder = Decoder::new(StructMessage::schema());
+            let decoder = Decoder::new(StructMessage::SCHEMA);
             let result = decoder
                 .fields(payload.as_slice())
                 .and_then(|fields| fields.collect::<ReadResult<Vec<_>>>());
@@ -791,7 +887,7 @@ mod test {
                         values: values.clone(),
                     };
                     let payload = wincode::serialize(&message).unwrap();
-                    let decoder = Decoder::new(Message::schema());
+                    let decoder = Decoder::new(Message::SCHEMA);
                     let value = decoder
                         .fields(payload.as_slice())
                         .unwrap()
