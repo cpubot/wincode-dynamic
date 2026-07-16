@@ -119,7 +119,19 @@ impl Schema {
     }
 }
 
+/// Runtime schema metadata derived for a serializable type.
 pub trait SchemaDynamic {
+    /// The maximum serialized size under wincode's default configuration, when known.
+    ///
+    /// Fixed-width structs report their exact size. Enums whose variants are all
+    /// fixed-width report the tag size plus the size of their largest variant,
+    /// even when the variants have different sizes. Types with a dynamically
+    /// sized encoding, such as those containing [`alloc::string::String`] or
+    /// [`alloc::vec::Vec`], report `None`. The value is derived from
+    /// [`wincode::SchemaWrite::TYPE_META`]; it is metadata for sizing storage,
+    /// not an additional serialization-time limit or validation step.
+    const MAX_SERIALIZED_SIZE: Option<usize> = None;
+
     fn schema() -> RootSchema;
 }
 
@@ -214,6 +226,20 @@ mod test {
         Value(u64),
     }
 
+    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[wincode_dynamic(internal)]
+    struct FixedSizeMessage {
+        value: u64,
+        enabled: bool,
+    }
+
+    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[wincode_dynamic(internal)]
+    enum FixedSizeEnum {
+        Flag(bool),
+        Value(u64),
+    }
+
     fn assert_enum_message(
         decoder: &Decoder,
         message: &EnumMessage,
@@ -242,6 +268,15 @@ mod test {
         assert_eq!(field.ty(), ty);
         assert_eq!(field.size(), size);
         assert_eq!(field.value(), value);
+    }
+
+    #[test]
+    fn maximum_serialized_size() {
+        assert_eq!(FixedSizeMessage::MAX_SERIALIZED_SIZE, Some(9));
+        assert_eq!(FixedSizeEnum::MAX_SERIALIZED_SIZE, Some(12));
+        assert_eq!(U8EnumMessage::MAX_SERIALIZED_SIZE, Some(9));
+        assert_eq!(StructMessage::MAX_SERIALIZED_SIZE, None);
+        assert_eq!(EnumMessage::MAX_SERIALIZED_SIZE, None);
     }
 
     #[test]
@@ -659,6 +694,9 @@ mod test {
             Empty,
             Item(T),
         }
+
+        assert_eq!(Generic::<u64>::MAX_SERIALIZED_SIZE, Some(12));
+        assert_eq!(Generic::<String>::MAX_SERIALIZED_SIZE, None);
 
         let decoder = Decoder::new(Generic::<u64>::schema());
         let payload = wincode::serialize(&Generic::Item(77u64)).unwrap();

@@ -47,3 +47,24 @@ for field in decoder.fields(&record[..])? {
 // owner = Bytes([7, 7, 7, ...])
 // executable = Bool(true)
 ```
+
+## Serialized size metadata
+
+The derive reports a maximum serialized size when it can determine one from
+wincode's static type metadata:
+
+```rust
+use wincode::{SchemaRead, SchemaWrite};
+use wincode_dynamic::SchemaDynamic;
+
+#[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+struct Event {
+    timestamp: u64,
+    active: bool,
+}
+
+assert_eq!(Event::MAX_SERIALIZED_SIZE, Some(9));
+```
+
+Types with dynamically sized fields report `None`, allowing callers to choose
+an appropriate limit for their storage or transport.

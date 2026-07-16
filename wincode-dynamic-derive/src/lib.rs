@@ -4,7 +4,9 @@ use {
         ast::{Data, Fields},
     },
     proc_macro::TokenStream,
-    syn::{DeriveInput, Expr, Generics, Ident, Path, Type, parse_macro_input, parse_quote},
+    syn::{
+        Attribute, DeriveInput, Expr, Generics, Ident, Path, Type, parse_macro_input, parse_quote,
+    },
 };
 mod wincode_dynamic;
 
@@ -20,8 +22,9 @@ pub(crate) struct Variant {
 }
 
 #[derive(FromField)]
-#[darling(attributes(wincode_dynamic), forward_attrs)]
+#[darling(attributes(wincode_dynamic), forward_attrs(wincode))]
 pub(crate) struct Field {
+    pub(crate) attrs: Vec<Attribute>,
     pub(crate) ident: Option<Ident>,
     pub(crate) ty: Type,
 }
