@@ -78,6 +78,110 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
     let (impl_generics, _, where_clause) = impl_generics.split_for_impl();
     let (_, ty_generics, _) = args.generics.split_for_impl();
     let ident = &args.ident;
+    let tag_encoding = args
+        .tag_encoding
+        .as_ref()
+        .map(Cow::Borrowed)
+        .unwrap_or_else(|| {
+            Cow::Owned(parse_quote! {
+                <wincode::config::DefaultConfig as wincode::config::Config>::TagEncoding
+            })
+        });
+    let inferred_max_serialized_size = match &args.data {
+        Data::Struct(_) => quote! {
+            match <#ident #ty_generics as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
+                wincode::TypeMeta::Static { size, .. } => Some(size),
+                wincode::TypeMeta::Dynamic => None,
+            }
+        },
+        Data::Enum(variants) => {
+            let variant_sizes = variants.iter().map(|variant| {
+                let field_sizes = variant.fields.iter().map(|field| {
+                    let ty = &field.ty;
+                    quote! {
+                        match <#ty as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
+                            wincode::TypeMeta::Static { size, .. } => {
+                                variant_size = match variant_size.checked_add(size) {
+                                    Some(size) => size,
+                                    None => panic!("maximum serialized size overflow"),
+                                };
+                            }
+                            wincode::TypeMeta::Dynamic => variant_is_static = false,
+                        }
+                    }
+                });
+
+                quote! {
+                    {
+                        #[allow(unused_mut)]
+                        let mut variant_size = 0usize;
+                        #[allow(unused_mut)]
+                        let mut variant_is_static = true;
+                        #(#field_sizes)*
+                        if variant_is_static {
+                            if variant_size > maximum_variant_size {
+                                maximum_variant_size = variant_size;
+                            }
+                        } else {
+                            all_variants_are_static = false;
+                        }
+                    }
+                }
+            });
+
+            quote! {
+                match <#ident #ty_generics as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
+                    wincode::TypeMeta::Static { size, .. } => Some(size),
+                    wincode::TypeMeta::Dynamic => {
+                        match <#tag_encoding as wincode::SchemaRead<wincode::config::DefaultConfig>>::TYPE_META {
+                            wincode::TypeMeta::Static { size: tag_size, .. } => {
+                                #[allow(unused_mut)]
+                                let mut maximum_variant_size = 0usize;
+                                #[allow(unused_mut)]
+                                let mut all_variants_are_static = true;
+                                #(#variant_sizes)*
+                                if all_variants_are_static {
+                                    Some(match tag_size.checked_add(maximum_variant_size) {
+                                        Some(size) => size,
+                                        None => panic!("maximum serialized size overflow"),
+                                    })
+                                } else {
+                                    None
+                                }
+                            }
+                            wincode::TypeMeta::Dynamic => None,
+                        }
+                    }
+                }
+            }
+        }
+    };
+    let max_serialized_size = if let Some(max_serialized_size) = &args.max_serialized_size {
+        quote! {
+            match #inferred_max_serialized_size {
+                Some(_) => {
+                    panic!("max_serialized_size must not be set when the maximum can be inferred")
+                }
+                None => #max_serialized_size,
+            }
+        }
+    } else {
+        quote! {
+            match #inferred_max_serialized_size {
+                Some(size) => size,
+                None => #crate_name::UNBOUNDED_SERIALIZED_SIZE,
+            }
+        }
+    };
+    // Force evaluation for concrete types so an invalid size declaration fails
+    // where the type is defined. Generic types are evaluated when their
+    // associated constant is used for a concrete instantiation.
+    let validate_max_serialized_size = args.generics.params.is_empty().then(|| {
+        quote! {
+            const _: usize =
+                <#ident as #crate_name::SchemaDynamic>::MAX_SERIALIZED_SIZE;
+        }
+    });
 
     let schema = match &args.data {
         Data::Struct(fields) => {
@@ -126,16 +230,6 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
                 }
             });
 
-            let tag_encoding = args
-                .tag_encoding
-                .as_ref()
-                .map(Cow::Borrowed)
-                .unwrap_or_else(|| {
-                    Cow::Owned(parse_quote! {
-                        <wincode::config::DefaultConfig as wincode::config::Config>::TagEncoding
-                    })
-                });
-
             quote! {
                 #crate_name::RootSchema::Enum {
                     name: stringify!(#ident).into(),
@@ -153,11 +247,15 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
     Ok(quote! {
         const _: () = {
             impl #impl_generics #crate_name::SchemaDynamic for #ident #ty_generics #where_clause {
+                const MAX_SERIALIZED_SIZE: usize = #max_serialized_size;
+
                 #[inline]
                 fn schema() -> #crate_name::RootSchema {
                    #schema
                 }
             }
+
+            #validate_max_serialized_size
         };
     })
 }

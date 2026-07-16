@@ -47,6 +47,9 @@ pub(crate) struct Args {
     pub(crate) crate_path: Option<Path>,
     #[darling(default)]
     pub(crate) tag_encoding: Option<Type>,
+    /// Declares a type-level upper bound on the serialized size.
+    #[darling(default)]
+    pub(crate) max_serialized_size: Option<Expr>,
 }
 
 impl Args {

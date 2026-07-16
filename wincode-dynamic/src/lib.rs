@@ -119,7 +119,41 @@ impl Schema {
     }
 }
 
+/// Sentinel used when a schema has no declared finite serialized-size bound.
+pub const UNBOUNDED_SERIALIZED_SIZE: usize = usize::MAX;
+
+/// Runtime schema metadata derived for a serializable type.
+///
+/// Statically sized types infer [`Self::MAX_SERIALIZED_SIZE`] and reject an
+/// explicit bound:
+///
+/// ```compile_fail
+/// use wincode::{SchemaRead, SchemaWrite};
+/// use wincode_dynamic::SchemaDynamic;
+///
+/// #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+/// #[wincode_dynamic(max_serialized_size = 16)]
+/// struct FixedEvent {
+///     value: u64,
+/// }
+/// ```
 pub trait SchemaDynamic {
+    /// An upper bound on the serialized size of this type.
+    ///
+    /// [`SchemaDynamic`] derives infer the maximum for fixed-width structs and
+    /// enums. This is the exact size for a statically sized type, or the tag
+    /// plus the largest variant for a fixed-width enum with differently sized
+    /// variants. Dynamically sized types default to
+    /// [`UNBOUNDED_SERIALIZED_SIZE`] unless a bound is declared with
+    /// `#[wincode_dynamic(max_serialized_size = ...)]`.
+    /// The attribute must not be specified when the maximum can be inferred.
+    ///
+    /// A declared bound is metadata for callers that serialize into bounded
+    /// storage. It does not constrain values such as [`alloc::string::String`]
+    /// or [`alloc::vec::Vec`]; the caller must reject an encoded value that
+    /// exceeds this bound.
+    const MAX_SERIALIZED_SIZE: usize = UNBOUNDED_SERIALIZED_SIZE;
+
     fn schema() -> RootSchema;
 }
 
@@ -214,6 +248,27 @@ mod test {
         Value(u64),
     }
 
+    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[wincode_dynamic(internal, max_serialized_size = 1024)]
+    struct BoundedMessage {
+        text: String,
+        values: Vec<u64>,
+    }
+
+    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[wincode_dynamic(internal)]
+    struct FixedSizeMessage {
+        value: u64,
+        enabled: bool,
+    }
+
+    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[wincode_dynamic(internal)]
+    enum FixedSizeEnum {
+        Flag(bool),
+        Value(u64),
+    }
+
     fn assert_enum_message(
         decoder: &Decoder,
         message: &EnumMessage,
@@ -242,6 +297,24 @@ mod test {
         assert_eq!(field.ty(), ty);
         assert_eq!(field.size(), size);
         assert_eq!(field.value(), value);
+    }
+
+    #[test]
+    fn maximum_serialized_size() {
+        assert_eq!(BoundedMessage::MAX_SERIALIZED_SIZE, 1024);
+        assert_eq!(FixedSizeMessage::MAX_SERIALIZED_SIZE, 9);
+        // The variants have different exact sizes, so wincode considers the
+        // enum dynamic. Its maximum is nevertheless known at compile time:
+        // a four-byte tag plus the largest (eight-byte) variant.
+        assert_eq!(FixedSizeEnum::MAX_SERIALIZED_SIZE, 12);
+        assert_eq!(
+            <FixedSizeEnum as SchemaRead<wincode::config::DefaultConfig>>::TYPE_META,
+            wincode::TypeMeta::Dynamic
+        );
+        assert_eq!(
+            StructMessage::MAX_SERIALIZED_SIZE,
+            UNBOUNDED_SERIALIZED_SIZE
+        );
     }
 
     #[test]
