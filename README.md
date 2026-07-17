@@ -47,3 +47,31 @@ for field in decoder.fields(&record[..])? {
 // owner = Bytes([7, 7, 7, ...])
 // executable = Bool(true)
 ```
+
+## Serialized size metadata
+
+The derive reports a maximum serialized size when it can determine one from
+wincode's static type metadata:
+
+```rust
+use wincode::{SchemaRead, SchemaWrite};
+use wincode_dynamic::{SchemaDynamic, SerializedSize};
+
+#[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+struct Event {
+    timestamp: u64,
+    active: bool,
+}
+
+assert_eq!(Event::SERIALIZED_SIZE, SerializedSize::Static(9));
+```
+
+Types with dynamically sized fields report `SerializedSize::Dynamic(n)`, where
+`n` is the largest contribution from fields whose sizes are statically known.
+Callers can add an application-specific allowance for the remaining dynamic
+data when sizing their storage or transport.
+
+For fields using `#[wincode(with = ...)]`, serialized-size metadata comes from
+the adapter, while the runtime schema continues to describe the Rust field's
+`DynTy`. The adapter must preserve that wire representation when the schema is
+used for dynamic decoding.
