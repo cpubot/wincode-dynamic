@@ -547,14 +547,24 @@ mod test {
             vals.clone().into_dyn_vec().unwrap(),
             vec![PrimitiveValue::U64(333); 4]
         );
+        let mut iter = vals.clone().try_into_iter_as::<u64>().unwrap();
+        fn assert_fused(_: &impl core::iter::FusedIterator) {}
+        assert_fused(&iter);
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        assert_eq!(iter.len(), 4);
+
+        assert_eq!(iter.next().unwrap().unwrap(), 333);
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        assert_eq!(iter.len(), 3);
+
         assert_eq!(
-            vals.clone()
-                .try_into_iter_as::<u64>()
-                .unwrap()
-                .collect::<ReadResult<Vec<_>>>()
-                .unwrap(),
-            vec![333; 4]
+            iter.by_ref().collect::<ReadResult<Vec<_>>>().unwrap(),
+            vec![333; 3]
         );
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+        assert_eq!(iter.len(), 0);
+        assert!(iter.next().is_none());
+        assert!(iter.next().is_none());
         assert!(vals.try_into_iter_as::<u32>().is_err());
 
         let field = result.next().unwrap();
@@ -636,12 +646,16 @@ mod test {
             panic!("expected a lazy vector");
         };
 
-        let error = values
-            .try_into_iter_as::<bool>()
-            .unwrap()
-            .collect::<ReadResult<Vec<_>>>()
-            .unwrap_err();
+        let mut values = values.try_into_iter_as::<bool>().unwrap();
+        assert_eq!(values.size_hint(), (2, Some(2)));
+        assert!(values.next().unwrap().unwrap());
+        assert_eq!(values.size_hint(), (1, Some(1)));
+
+        let error = values.next().unwrap().unwrap_err();
         assert!(matches!(error, wincode::ReadError::InvalidBoolEncoding(2)));
+        assert_eq!(values.size_hint(), (0, Some(0)));
+        assert_eq!(values.len(), 0);
+        assert!(values.next().is_none());
     }
 
     #[test]

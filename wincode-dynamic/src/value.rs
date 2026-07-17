@@ -69,6 +69,7 @@ pub mod lazy_vec {
     /// An owning, lazy iterator over the elements of a [`LazyVec`].
     ///
     /// Each item is decoded only when [`Iterator::next`] is called.
+    #[derive(Debug, Clone)]
     pub struct IntoIter<'a, As> {
         payload: Cow<'a, [u8]>,
         len: usize,
@@ -228,6 +229,27 @@ pub mod lazy_vec {
             self.index += 1;
             Some(item)
         }
+
+        #[inline]
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            let remaining = self.len - self.index;
+            (remaining, Some(remaining))
+        }
+    }
+
+    impl<As> ExactSizeIterator for IntoIter<'_, As>
+    where
+        As: for<'de> SchemaRead<'de, DefaultConfig, Dst = As>,
+    {
+        #[inline]
+        fn len(&self) -> usize {
+            self.len - self.index
+        }
+    }
+
+    impl<As> core::iter::FusedIterator for IntoIter<'_, As> where
+        As: for<'de> SchemaRead<'de, DefaultConfig, Dst = As>
+    {
     }
 }
 
