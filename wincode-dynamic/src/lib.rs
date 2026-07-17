@@ -7,6 +7,7 @@ use {
     wincode::{ReadResult, SchemaRead, SchemaWrite, error::invalid_tag_encoding, io::Reader},
 };
 
+mod compile_fail;
 mod ty;
 mod value;
 mod wincode_extra;
@@ -119,18 +120,36 @@ impl Schema {
     }
 }
 
+/// Information known at compile time about a type's serialized size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SerializedSize {
+    /// Every serialized value fits within this many bytes.
+    ///
+    /// Individual values may be smaller, such as enum variants with different encoded sizes.
+    Static(usize),
+    /// A complete upper bound cannot be derived, but statically sized fields contribute at most
+    /// this many bytes.
+    Dynamic(usize),
+}
+
 /// Runtime schema metadata derived for a serializable type.
 pub trait SchemaDynamic {
-    /// The maximum serialized size under wincode's default configuration, when known.
+    /// Serialized-size information under wincode's default configuration.
     ///
-    /// Fixed-width structs report their exact size. Enums whose variants are all
-    /// fixed-width report the tag size plus the size of their largest variant,
-    /// even when the variants have different sizes. Types with a dynamically
-    /// sized encoding, such as those containing [`alloc::string::String`] or
-    /// [`alloc::vec::Vec`], report `None`. The value is derived from
-    /// [`wincode::SchemaWrite::TYPE_META`]; it is metadata for sizing storage,
-    /// not an additional serialization-time limit or validation step.
-    const MAX_SERIALIZED_SIZE: Option<usize> = None;
+    /// - [`SerializedSize::Static`] means the entire encoding has a finite maximum. Its value is
+    ///   the maximum number of serialized bytes; individual enum variants may be smaller.
+    /// - [`SerializedSize::Dynamic`] means a complete upper bound cannot be derived from wincode's
+    ///   type metadata. Its value is the portion that can still be determined statically: the sum
+    ///   of fixed-size fields for a struct, or the tag plus the largest fixed-size portion of any
+    ///   enum variant.
+    ///
+    /// This constant is sizing metadata; it does not impose or validate a serialization limit.
+    ///
+    /// A `#[wincode(with = ...)]` adapter supplies the field's serialized-size metadata, but the
+    /// runtime [`RootSchema`] continues to describe the Rust field's [`DynTy`]. Such an adapter
+    /// must therefore preserve that field's wire representation when the schema is used with
+    /// [`Decoder`].
+    const SERIALIZED_SIZE: SerializedSize = SerializedSize::Dynamic(0);
 
     fn schema() -> RootSchema;
 }
@@ -196,7 +215,11 @@ impl Decoder {
 
 #[cfg(all(test, feature = "std"))]
 mod test {
-    use {super::*, proptest::prelude::*, proptest_derive::Arbitrary};
+    use {super::*, core::mem::size_of, proptest::prelude::*, proptest_derive::Arbitrary};
+
+    wincode::pod_wrapper! {
+        unsafe struct PodU64(u64);
+    }
 
     #[derive(Arbitrary, SchemaDynamic, SchemaRead, SchemaWrite, PartialEq, Debug)]
     #[wincode_dynamic(internal)]
@@ -240,6 +263,66 @@ mod test {
         Value(u64),
     }
 
+    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[wincode_dynamic(internal)]
+    enum SameSizeEnum {
+        First(u64),
+        Second(u64),
+    }
+
+    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[wincode_dynamic(internal)]
+    enum MixedSizeEnum {
+        Flag(bool),
+        Payload { id: u64, data: Vec<u8> },
+    }
+
+    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[wincode_dynamic(internal)]
+    struct SkippedFieldStruct {
+        before: u8,
+        #[wincode(skip)]
+        skipped: String,
+        after: u64,
+    }
+
+    #[derive(Default)]
+    struct Opaque;
+
+    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[wincode_dynamic(internal)]
+    struct OpaqueSkippedField {
+        #[wincode(skip)]
+        skipped: Opaque,
+        value: u64,
+    }
+
+    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[wincode_dynamic(internal)]
+    enum SkippedFieldEnum {
+        Skipped(#[wincode(skip)] String, bool),
+        Value(u64),
+    }
+
+    #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    #[wincode_dynamic(internal)]
+    enum AdaptedFieldEnum {
+        Adapted(#[wincode(with = "PodU64")] u64),
+        Flag(bool),
+    }
+
+    // Keep this in a module so the lint allowance needed by SchemaRead's empty-enum expansion
+    // does not apply to the rest of the tests.
+    mod empty_enum {
+        #![allow(unreachable_code)]
+
+        use super::*;
+
+        #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+        #[wincode_dynamic(internal)]
+        pub(super) enum EmptyEnum {}
+    }
+
     fn assert_enum_message(
         decoder: &Decoder,
         message: &EnumMessage,
@@ -271,12 +354,138 @@ mod test {
     }
 
     #[test]
-    fn maximum_serialized_size() {
-        assert_eq!(FixedSizeMessage::MAX_SERIALIZED_SIZE, Some(9));
-        assert_eq!(FixedSizeEnum::MAX_SERIALIZED_SIZE, Some(12));
-        assert_eq!(U8EnumMessage::MAX_SERIALIZED_SIZE, Some(9));
-        assert_eq!(StructMessage::MAX_SERIALIZED_SIZE, None);
-        assert_eq!(EnumMessage::MAX_SERIALIZED_SIZE, None);
+    fn serialized_size_metadata() {
+        assert_eq!(FixedSizeMessage::SERIALIZED_SIZE, SerializedSize::Static(9));
+        assert_eq!(FixedSizeEnum::SERIALIZED_SIZE, SerializedSize::Static(12));
+        assert_eq!(U8EnumMessage::SERIALIZED_SIZE, SerializedSize::Static(9));
+        assert_eq!(StructMessage::SERIALIZED_SIZE, SerializedSize::Dynamic(49));
+        assert_eq!(EnumMessage::SERIALIZED_SIZE, SerializedSize::Dynamic(13));
+        assert_eq!(SameSizeEnum::SERIALIZED_SIZE, SerializedSize::Static(12));
+        assert_eq!(MixedSizeEnum::SERIALIZED_SIZE, SerializedSize::Dynamic(12));
+        assert_eq!(
+            SkippedFieldStruct::SERIALIZED_SIZE,
+            SerializedSize::Static(9)
+        );
+        assert_eq!(
+            OpaqueSkippedField::SERIALIZED_SIZE,
+            SerializedSize::Static(8)
+        );
+        assert_eq!(
+            SkippedFieldEnum::SERIALIZED_SIZE,
+            SerializedSize::Static(12)
+        );
+        assert_eq!(
+            AdaptedFieldEnum::SERIALIZED_SIZE,
+            SerializedSize::Static(12)
+        );
+        assert_eq!(
+            empty_enum::EmptyEnum::SERIALIZED_SIZE,
+            SerializedSize::Static(0)
+        );
+
+        assert_eq!(
+            wincode::serialize(&FixedSizeEnum::Flag(false))
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(
+            wincode::serialize(&FixedSizeEnum::Value(0)).unwrap().len(),
+            12
+        );
+        let skipped = SkippedFieldEnum::Skipped(String::new(), true);
+        assert!(matches!(
+            &skipped,
+            SkippedFieldEnum::Skipped(value, true) if value.is_empty()
+        ));
+        assert_eq!(wincode::serialize(&skipped).unwrap().len(), 5);
+        assert_eq!(
+            wincode::serialize(&SkippedFieldEnum::Value(0))
+                .unwrap()
+                .len(),
+            12
+        );
+        assert_eq!(
+            wincode::serialize(&AdaptedFieldEnum::Adapted(0))
+                .unwrap()
+                .len(),
+            12
+        );
+        assert_eq!(
+            wincode::serialize(&AdaptedFieldEnum::Flag(false))
+                .unwrap()
+                .len(),
+            5
+        );
+    }
+
+    #[test]
+    fn skipped_fields_are_omitted_from_runtime_schemas() {
+        let opaque = OpaqueSkippedField {
+            skipped: Opaque,
+            value: 3,
+        };
+        let _ = &opaque.skipped;
+        let payload = wincode::serialize(&opaque).unwrap();
+        let decoder = Decoder::new(OpaqueSkippedField::schema());
+        let fields = decoder
+            .fields(payload.as_slice())
+            .unwrap()
+            .collect::<ReadResult<Vec<_>>>()
+            .unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_field(
+            &fields[0],
+            "value",
+            Ty::PrimitiveTy(PrimitiveTy::U64),
+            Some(8),
+            &Value::U64(3),
+        );
+
+        let message = SkippedFieldStruct {
+            before: 1,
+            skipped: "not serialized".into(),
+            after: 2,
+        };
+        let payload = wincode::serialize(&message).unwrap();
+        let decoder = Decoder::new(SkippedFieldStruct::schema());
+        let fields = decoder
+            .fields(payload.as_slice())
+            .unwrap()
+            .collect::<ReadResult<Vec<_>>>()
+            .unwrap();
+        assert_eq!(fields.len(), 2);
+        assert_field(
+            &fields[0],
+            "before",
+            Ty::PrimitiveTy(PrimitiveTy::U8),
+            Some(1),
+            &Value::U8(1),
+        );
+        assert_field(
+            &fields[1],
+            "after",
+            Ty::PrimitiveTy(PrimitiveTy::U64),
+            Some(8),
+            &Value::U64(2),
+        );
+
+        let message = SkippedFieldEnum::Skipped("not serialized".into(), true);
+        let payload = wincode::serialize(&message).unwrap();
+        let decoder = Decoder::new(SkippedFieldEnum::schema());
+        let fields = decoder
+            .fields(payload.as_slice())
+            .unwrap()
+            .collect::<ReadResult<Vec<_>>>()
+            .unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_field(
+            &fields[0],
+            "1",
+            Ty::PrimitiveTy(PrimitiveTy::Bool),
+            Some(1),
+            &Value::Bool(true),
+        );
     }
 
     #[test]
@@ -695,8 +904,81 @@ mod test {
             Item(T),
         }
 
-        assert_eq!(Generic::<u64>::MAX_SERIALIZED_SIZE, Some(12));
-        assert_eq!(Generic::<String>::MAX_SERIALIZED_SIZE, None);
+        #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+        #[wincode_dynamic(internal)]
+        struct GenericSkip<T: Default> {
+            #[wincode(skip)]
+            skipped: T,
+            value: u64,
+        }
+
+        #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+        #[wincode_dynamic(internal)]
+        enum GenericSkipEnum<T: Default> {
+            Skipped(#[wincode(skip)] T),
+            Value(u64),
+        }
+
+        #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+        #[wincode_dynamic(internal)]
+        struct GenericWith<T> {
+            #[wincode(with = "wincode::containers::Vec<_, wincode::len::BincodeLen>")]
+            values: Vec<T>,
+        }
+
+        #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+        #[wincode_dynamic(internal)]
+        enum GenericWithEnum<T> {
+            Values(
+                #[wincode(with = "wincode::containers::Vec<_, wincode::len::BincodeLen>")] Vec<T>,
+            ),
+            Empty,
+        }
+
+        assert_eq!(Generic::<u64>::SERIALIZED_SIZE, SerializedSize::Static(12));
+        assert_eq!(
+            Generic::<String>::SERIALIZED_SIZE,
+            SerializedSize::Dynamic(4)
+        );
+        assert_eq!(
+            GenericSkip::<u64>::SERIALIZED_SIZE,
+            SerializedSize::Static(8)
+        );
+        assert_eq!(
+            GenericSkipEnum::<u64>::SERIALIZED_SIZE,
+            SerializedSize::Static(12)
+        );
+        assert_eq!(
+            GenericWith::<u64>::SERIALIZED_SIZE,
+            SerializedSize::Dynamic(0)
+        );
+        assert_eq!(
+            GenericWithEnum::<u64>::SERIALIZED_SIZE,
+            SerializedSize::Dynamic(4)
+        );
+
+        let skipped = GenericSkip {
+            skipped: 0u64,
+            value: 1,
+        };
+        assert_eq!(skipped.skipped, 0);
+        assert_eq!(wincode::serialize(&skipped).unwrap().len(), 8);
+
+        let skipped = GenericSkipEnum::Skipped(0u64);
+        assert!(matches!(skipped, GenericSkipEnum::Skipped(0)));
+        let value = GenericSkipEnum::<u64>::Value(1);
+        assert_eq!(wincode::serialize(&value).unwrap().len(), 12);
+
+        let adapted = GenericWith {
+            values: vec![1u64, 2],
+        };
+        assert!(!wincode::serialize(&adapted).unwrap().is_empty());
+        let adapted = GenericWithEnum::Values(vec![1u64, 2]);
+        assert!(!wincode::serialize(&adapted).unwrap().is_empty());
+        assert!(matches!(
+            GenericWithEnum::<u64>::Empty,
+            GenericWithEnum::Empty
+        ));
 
         let decoder = Decoder::new(Generic::<u64>::schema());
         let payload = wincode::serialize(&Generic::Item(77u64)).unwrap();
