@@ -547,7 +547,7 @@ mod test {
             vals.clone().into_dyn_vec().unwrap(),
             vec![PrimitiveValue::U64(333); 4]
         );
-        let mut iter = vals.clone().try_into_iter_as::<u64>().unwrap();
+        let mut iter = vals.try_iter_as::<u64>().unwrap();
         fn assert_fused(_: &impl core::iter::FusedIterator) {}
         assert_fused(&iter);
         assert_eq!(iter.size_hint(), (4, Some(4)));
@@ -565,7 +565,7 @@ mod test {
         assert_eq!(iter.len(), 0);
         assert!(iter.next().is_none());
         assert!(iter.next().is_none());
-        assert!(vals.try_into_iter_as::<u32>().is_err());
+        assert!(vals.try_iter_as::<u32>().is_err());
 
         let field = result.next().unwrap();
         assert_field(
@@ -656,6 +656,29 @@ mod test {
         assert_eq!(values.size_hint(), (0, Some(0)));
         assert_eq!(values.len(), 0);
         assert!(values.next().is_none());
+    }
+
+    #[test]
+    fn lazy_vector_iterators_can_borrow_or_own_the_payload() {
+        // SAFETY: the payload contains exactly three encoded `u8` elements.
+        let values: LazyVec<'static> =
+            unsafe { LazyVec::new_unchecked(PrimitiveTy::U8, 3, Cow::Owned(vec![1, 2, 3])) };
+
+        assert_eq!(
+            values
+                .try_iter_as::<u8>()
+                .unwrap()
+                .collect::<ReadResult<Vec<_>>>()
+                .unwrap(),
+            [1, 2, 3]
+        );
+
+        let mut values = values.try_into_iter_as::<u8>().unwrap();
+        fn assert_fused(_: &impl core::iter::FusedIterator) {}
+        assert_fused(&values);
+        assert_eq!(values.next().unwrap().unwrap(), 1);
+        assert_eq!(values.len(), 2);
+        assert_eq!(values.collect::<ReadResult<Vec<_>>>().unwrap(), [2, 3]);
     }
 
     #[test]

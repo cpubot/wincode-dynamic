@@ -50,8 +50,10 @@ pub enum Value<'a> {
 /// A lazily decoded vector of fixed-width primitive values.
 ///
 /// The encoded payload remains borrowed when the input reader supports stable
-/// borrowing. Use [`Self::try_into_iter_as`] when the concrete element type is
-/// known, or [`Self::into_dyn_vec`] to decode dynamically typed values.
+/// borrowing. Use [`Self::try_iter_as`] to iterate by reference when the
+/// concrete element type is known, [`Self::try_into_iter_as`] to create an
+/// owning iterator, or [`Self::into_dyn_vec`] to decode dynamically typed
+/// values.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LazyVec<'a> {
     ty: PrimitiveTy,
@@ -65,6 +67,17 @@ pub struct LazyVec<'a> {
 /// Lazy-vector iterator types.
 pub mod lazy_vec {
     use {super::*, crate::DynPrimitiveTy};
+
+    /// A borrowing, lazy iterator over the elements of a [`LazyVec`].
+    ///
+    /// Each item is decoded only when [`Iterator::next`] is called.
+    #[derive(Debug, Clone, Copy)]
+    pub struct Iter<'a, As> {
+        payload: &'a [u8],
+        len: usize,
+        index: usize,
+        _marker: PhantomData<As>,
+    }
 
     /// An owning, lazy iterator over the elements of a [`LazyVec`].
     ///
@@ -89,7 +102,7 @@ pub mod lazy_vec {
             Self { ty, len, payload }
         }
 
-        /// Converts this vector into a lazy iterator of `As` values.
+        /// Returns a borrowing, lazy iterator of `As` values.
         ///
         /// The requested type must match the primitive element type recorded in
         /// the schema. This prevents, for example, interpreting the payload of a
@@ -101,9 +114,8 @@ pub mod lazy_vec {
         /// malformed element encodings are reported by the iterator item that
         /// encounters them rather than by this method.
         ///
-        /// The lazy vector is consumed so the iterator can retain ownership of
-        /// its payload. Borrowed payloads remain borrowed; no allocation or eager
-        /// collection is performed by this conversion.
+        /// The iterator borrows this lazy vector. Multiple iterators can be
+        /// created without cloning or decoding the payload.
         ///
         /// To iterate, `As` must also implement
         /// [`SchemaRead<DefaultConfig, Dst = As>`](SchemaRead).
@@ -139,25 +151,44 @@ pub mod lazy_vec {
         ///     panic!("expected a vector");
         /// };
         /// let values = values
-        ///     .clone()
-        ///     .try_into_iter_as::<u64>()?
+        ///     .try_iter_as::<u64>()?
         ///     .collect::<ReadResult<Vec<_>>>()?;
         ///
         /// assert_eq!(values, [10, 20, 30]);
         /// # Ok::<(), wincode::ReadError>(())
         /// ```
         #[inline]
+        pub fn try_iter_as<'iter, As>(&'iter self) -> ReadResult<Iter<'iter, As>>
+        where
+            As: DynPrimitiveTy,
+        {
+            validate_element_type::<As>(self.ty)?;
+
+            Ok(Iter {
+                len: self.len,
+                payload: self.payload.as_ref(),
+                index: 0,
+                _marker: PhantomData,
+            })
+        }
+
+        /// Converts this vector into an owning, lazy iterator of `As` values.
+        ///
+        /// This performs the same type validation as [`Self::try_iter_as`], but
+        /// consumes the lazy vector and moves its payload into the iterator.
+        /// Borrowed payloads remain borrowed, and owned payloads are moved without
+        /// cloning or reallocating them.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if `As` does not match the vector's recorded
+        /// primitive element type or width.
+        #[inline]
         pub fn try_into_iter_as<As>(self) -> ReadResult<IntoIter<'a, As>>
         where
             As: DynPrimitiveTy,
         {
-            #[cold]
-            const fn ty_mismatch() -> ReadError {
-                ReadError::Custom("lazy vector element type mismatch")
-            }
-            if As::TYPE != self.ty || self.ty.size() != size_of::<As>() {
-                return Err(ty_mismatch());
-            }
+            validate_element_type::<As>(self.ty)?;
 
             Ok(IntoIter {
                 len: self.len,
@@ -208,49 +239,70 @@ pub mod lazy_vec {
         }
     }
 
-    impl<As> Iterator for IntoIter<'_, As>
-    where
-        As: for<'de> SchemaRead<'de, DefaultConfig, Dst = As>,
-    {
-        type Item = ReadResult<As>;
+    #[inline]
+    fn validate_element_type<As: DynPrimitiveTy>(ty: PrimitiveTy) -> ReadResult<()> {
+        #[cold]
+        const fn ty_mismatch() -> ReadError {
+            ReadError::Custom("lazy vector element type mismatch")
+        }
 
-        #[inline]
-        fn next(&mut self) -> Option<Self::Item> {
-            if self.index >= self.len {
-                return None;
+        if As::TYPE != ty || ty.size() != size_of::<As>() {
+            return Err(ty_mismatch());
+        }
+
+        Ok(())
+    }
+
+    macro_rules! impl_iterator {
+        ($iter:ident) => {
+            impl<As> Iterator for $iter<'_, As>
+            where
+                As: for<'de> SchemaRead<'de, DefaultConfig, Dst = As>,
+            {
+                type Item = ReadResult<As>;
+
+                #[inline]
+                fn next(&mut self) -> Option<Self::Item> {
+                    if self.index >= self.len {
+                        return None;
+                    }
+                    let start = self.index * size_of::<As>();
+                    // SAFETY:
+                    // - `payload.len()` is an exact multiple of `size_of::<As>()`.
+                    // - `len` is `payload.len() / size_of::<As>()`.
+                    // - `index < len`, so `start < payload.len()`.
+                    let remaining = unsafe { self.payload.as_ref().get_unchecked(start..) };
+                    let item = As::get(remaining);
+                    self.index += 1;
+                    Some(item)
+                }
+
+                #[inline]
+                fn size_hint(&self) -> (usize, Option<usize>) {
+                    let remaining = self.len - self.index;
+                    (remaining, Some(remaining))
+                }
             }
-            let start = self.index * size_of::<As>();
-            // SAFETY:
-            // - `payload.len()` is an exact multiple of `size_of::<As>()`.
-            // - `len` is `payload.len() / size_of::<As>()`.
-            // - `index < len`, so `start < payload.len()`.
-            let remaining = unsafe { self.payload.get_unchecked(start..) };
-            let item = As::get(remaining);
-            self.index += 1;
-            Some(item)
-        }
 
-        #[inline]
-        fn size_hint(&self) -> (usize, Option<usize>) {
-            let remaining = self.len - self.index;
-            (remaining, Some(remaining))
-        }
+            impl<As> ExactSizeIterator for $iter<'_, As>
+            where
+                As: for<'de> SchemaRead<'de, DefaultConfig, Dst = As>,
+            {
+                #[inline]
+                fn len(&self) -> usize {
+                    self.len - self.index
+                }
+            }
+
+            impl<As> core::iter::FusedIterator for $iter<'_, As> where
+                As: for<'de> SchemaRead<'de, DefaultConfig, Dst = As>
+            {
+            }
+        };
     }
 
-    impl<As> ExactSizeIterator for IntoIter<'_, As>
-    where
-        As: for<'de> SchemaRead<'de, DefaultConfig, Dst = As>,
-    {
-        #[inline]
-        fn len(&self) -> usize {
-            self.len - self.index
-        }
-    }
-
-    impl<As> core::iter::FusedIterator for IntoIter<'_, As> where
-        As: for<'de> SchemaRead<'de, DefaultConfig, Dst = As>
-    {
-    }
+    impl_iterator!(Iter);
+    impl_iterator!(IntoIter);
 }
 
 unsafe impl<'de, C: ConfigCore> SchemaReadContext<'de, C, PrimitiveTy> for PrimitiveValue {
