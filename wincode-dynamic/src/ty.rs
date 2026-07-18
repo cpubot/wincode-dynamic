@@ -115,6 +115,16 @@ impl Ty {
             Ty::Array { ty, len } => read_primitive_payload(ty, len, reader),
         }
     }
+
+    #[inline]
+    pub const fn size(self) -> Option<usize> {
+        match self {
+            Ty::PrimitiveTy(ty) => Some(ty.size()),
+            Ty::String => None,
+            Ty::Vec { .. } => None,
+            Ty::Array { ty, len } => Some(ty.size() * len),
+        }
+    }
 }
 
 pub trait DynPrimitiveTy {

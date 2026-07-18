@@ -29,6 +29,25 @@ pub enum PrimitiveValue {
     Bool(bool),
 }
 
+impl PrimitiveValue {
+    #[inline]
+    pub const fn size(self) -> usize {
+        match self {
+            PrimitiveValue::U8(_) => 1,
+            PrimitiveValue::U16(_) => 2,
+            PrimitiveValue::U32(_) => 4,
+            PrimitiveValue::U64(_) => 8,
+            PrimitiveValue::I8(_) => 1,
+            PrimitiveValue::I16(_) => 2,
+            PrimitiveValue::I32(_) => 4,
+            PrimitiveValue::I64(_) => 8,
+            PrimitiveValue::F32(_) => 4,
+            PrimitiveValue::F64(_) => 8,
+            PrimitiveValue::Bool(_) => 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value<'a> {
     U8(u8),
@@ -45,6 +64,28 @@ pub enum Value<'a> {
     String(Cow<'a, str>),
     Bytes(Cow<'a, [u8]>),
     Vec(LazyVec<'a>),
+}
+
+impl Value<'_> {
+    #[inline]
+    pub fn size(&self) -> usize {
+        match self {
+            Value::U8(_) => 1,
+            Value::U16(_) => 2,
+            Value::U32(_) => 4,
+            Value::U64(_) => 8,
+            Value::I8(_) => 1,
+            Value::I16(_) => 2,
+            Value::I32(_) => 4,
+            Value::I64(_) => 8,
+            Value::F32(_) => 4,
+            Value::F64(_) => 8,
+            Value::Bool(_) => 1,
+            Value::String(str) => str.len(),
+            Value::Bytes(bytes) => bytes.len(),
+            Value::Vec(vec) => vec.payload.len(),
+        }
+    }
 }
 
 /// A lazily decoded vector of fixed-width primitive values.
