@@ -3,7 +3,7 @@
 extern crate alloc;
 
 use {
-    alloc::{borrow::Cow, boxed::Box, string::String},
+    alloc::{boxed::Box, string::String},
     wincode::{ReadResult, SchemaRead, SchemaWrite, error::invalid_tag_encoding, io::Reader},
 };
 
@@ -24,7 +24,7 @@ pub struct FieldDef {
 
 #[derive(Debug, Clone)]
 pub struct Field<'meta, 'data> {
-    name: Cow<'meta, str>,
+    name: &'meta str,
     ty: Ty,
     size: Option<usize>,
     value: Value<'data>,
@@ -32,22 +32,22 @@ pub struct Field<'meta, 'data> {
 
 impl<'meta, 'data> Field<'meta, 'data> {
     #[inline]
-    pub fn name(&self) -> &str {
-        &self.name
+    pub const fn name(&self) -> &str {
+        self.name
     }
 
     #[inline]
-    pub fn ty(&self) -> Ty {
+    pub const fn ty(&self) -> Ty {
         self.ty
     }
 
     #[inline]
-    pub fn size(&self) -> Option<usize> {
+    pub const fn size(&self) -> Option<usize> {
         self.size
     }
 
     #[inline]
-    pub fn value(&self) -> &Value<'data> {
+    pub const fn value(&self) -> &Value<'data> {
         &self.value
     }
 
@@ -204,7 +204,7 @@ impl Decoder {
         Ok(fields.iter().map(move |field| {
             let value = field.parse(reader.by_ref())?;
             Ok(Field {
-                name: Cow::Borrowed(&field.name),
+                name: &field.name,
                 ty: field.ty,
                 size: field.size,
                 value,
@@ -215,7 +215,10 @@ impl Decoder {
 
 #[cfg(all(test, feature = "std"))]
 mod test {
-    use {super::*, core::mem::size_of, proptest::prelude::*, proptest_derive::Arbitrary};
+    use {
+        super::*, alloc::borrow::Cow, core::mem::size_of, proptest::prelude::*,
+        proptest_derive::Arbitrary,
+    };
 
     wincode::pod_wrapper! {
         unsafe struct PodU64(u64);
