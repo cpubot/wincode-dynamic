@@ -15,6 +15,8 @@ mod wincode_extra;
 #[cfg(feature = "derive")]
 pub use wincode_dynamic_derive::*;
 pub use {ty::*, value::*};
+#[cfg(test)]
+mod proptest_config;
 
 /// Describes a field in a runtime [`Schema`].
 ///
@@ -370,8 +372,8 @@ impl Decoder {
 #[cfg(all(test, feature = "std"))]
 mod test {
     use {
-        super::*, alloc::borrow::Cow, core::mem::size_of, proptest::prelude::*,
-        proptest_derive::Arbitrary,
+        super::*, crate::proptest_config::proptest_cfg, alloc::borrow::Cow, core::mem::size_of,
+        proptest::prelude::*, proptest_derive::Arbitrary,
     };
 
     wincode::pod_wrapper! {
@@ -1180,6 +1182,8 @@ mod test {
     }
 
     proptest! {
+        #![proptest_config(proptest_cfg())]
+
         #[test]
         fn arbitrary_struct_fields_match(message in any::<StructMessage>()) {
             let payload = wincode::serialize(&message).unwrap();
@@ -1277,6 +1281,8 @@ mod test {
     macro_rules! primitive_vector_property {
         ($name:ident, $ty:ty, $variant:path, $strategy:expr) => {
             proptest! {
+                #![proptest_config(proptest_cfg())]
+
                 #[test]
                 fn $name(values in proptest::collection::vec($strategy, 0..64)) {
                     #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
