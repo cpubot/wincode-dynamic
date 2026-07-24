@@ -1,12 +1,14 @@
 [package]
 name = "wincode-dynamic"
 version = "0.1.0"
+description = "Runtime schemas and reflective decoding for wincode"
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+readme = "README.md"
 categories = ["encoding", "network-programming"]
 keywords = ["binary", "encode", "serialize", "deserialize", "bincode"]
 
