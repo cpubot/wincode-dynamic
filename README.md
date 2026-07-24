@@ -24,9 +24,10 @@ Runtime schemas currently support:
 - strings; and
 - arrays and vectors of primitives.
 
-Producers can serialize a slice instead of allocating a `Vec` or `String` as normally with `wincode`;
-both use the same wire format. The decoder returns `u8` sequences as raw bytes and other
-primitive sequences as [`LazyVec`](https://docs.rs/wincode-dynamic/latest/wincode_dynamic/struct.LazyVec.html).
+Producers can serialize a slice instead of allocating a `Vec`, or a `&str`
+instead of allocating a `String`; each uses the same wire format as its owned
+counterpart. The decoder returns `u8` sequences as raw bytes and other primitive
+sequences as [`LazyVec`](https://docs.rs/wincode-dynamic/latest/wincode_dynamic/struct.LazyVec.html).
 With a supported reader, this data borrows directly from the input.
 
 Schema generation and dynamic decoding currently support only wincode's
