@@ -378,8 +378,12 @@ impl Decoder {
 #[cfg(all(test, feature = "std"))]
 mod test {
     use {
-        super::*, crate::proptest_config::proptest_cfg, alloc::borrow::Cow, core::mem::size_of,
-        proptest::prelude::*, proptest_derive::Arbitrary,
+        super::*,
+        crate::proptest_config::proptest_cfg,
+        alloc::borrow::Cow,
+        core::mem::{align_of, size_of},
+        proptest::prelude::*,
+        proptest_derive::Arbitrary,
     };
 
     wincode::pod_wrapper! {
@@ -840,6 +844,49 @@ mod test {
     }
 
     #[test]
+    fn lazy_vector_decodes_from_an_unaligned_borrowed_payload() {
+        #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+        #[wincode_dynamic(internal)]
+        struct Message {
+            values: Vec<u64>,
+        }
+
+        let values = [10, 20, 30];
+        let payload = wincode::serialize(&Message {
+            values: values.into(),
+        })
+        .unwrap();
+        let length_prefix_size = wincode::serialize(&Vec::<u64>::new()).unwrap().len();
+        let mut storage = vec![0; payload.len() + align_of::<u64>()];
+        let offset = (0..align_of::<u64>())
+            .find(|offset| {
+                // The vector elements begin immediately after its length prefix.
+                unsafe { storage.as_ptr().add(*offset + length_prefix_size) }
+                    .align_offset(align_of::<u64>())
+                    != 0
+            })
+            .expect("an unaligned offset");
+        storage[offset..offset + payload.len()].copy_from_slice(&payload);
+        let payload = &storage[offset..offset + payload.len()];
+
+        let decoder = Decoder::new(Message::schema());
+        let field = decoder.fields(payload).unwrap().next().unwrap().unwrap();
+        let Value::Vec(values) = field.value() else {
+            panic!("expected a lazy vector");
+        };
+
+        assert!(values.has_borrowed_payload());
+        assert_eq!(
+            values
+                .try_iter_as::<u64>()
+                .unwrap()
+                .collect::<ReadResult<Vec<_>>>()
+                .unwrap(),
+            [10, 20, 30]
+        );
+    }
+
+    #[test]
     fn owned_lazy_payloads_enforce_the_byte_preallocation_limit() {
         use wincode::{
             config::{Config, DEFAULT_PREALLOCATION_SIZE_LIMIT, DefaultConfig},
@@ -1079,6 +1126,55 @@ mod test {
             }
             fields => panic!("expected borrowed string and bytes, got {fields:?}"),
         }
+    }
+
+    #[test]
+    fn dynamic_values_own_payloads_from_an_owned_reader() {
+        use wincode::io::Cursor;
+
+        #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+        #[wincode_dynamic(internal)]
+        struct Owned {
+            text: String,
+            bytes: Vec<u8>,
+            values: Vec<u64>,
+        }
+
+        let payload = wincode::serialize(&Owned {
+            text: "owned".into(),
+            bytes: vec![1, 2, 3],
+            values: vec![10, 20, 30],
+        })
+        .unwrap();
+        let decoder = Decoder::new(Owned::schema());
+        let mut fields = decoder.fields(Cursor::new(payload)).unwrap();
+
+        let text = fields.next().unwrap().unwrap().into_value();
+        assert!(matches!(
+            text,
+            Value::String(Cow::Owned(ref text)) if text == "owned"
+        ));
+
+        let bytes = fields.next().unwrap().unwrap().into_value();
+        assert!(matches!(
+            bytes,
+            Value::Bytes(Cow::Owned(ref bytes)) if bytes == &[1, 2, 3]
+        ));
+
+        let values = fields.next().unwrap().unwrap().into_value();
+        let Value::Vec(values) = values else {
+            panic!("expected a lazy vector");
+        };
+        assert!(!values.has_borrowed_payload());
+        assert_eq!(
+            values
+                .try_into_iter_as::<u64>()
+                .unwrap()
+                .collect::<ReadResult<Vec<_>>>()
+                .unwrap(),
+            [10, 20, 30]
+        );
+        assert!(fields.next().is_none());
     }
 
     #[test]
