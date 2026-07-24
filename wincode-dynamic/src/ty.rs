@@ -64,6 +64,26 @@ impl PrimitiveTy {
         <usize as SchemaReadContext<DefaultConfig, _>>::get_with_context(self, reader)
     }
 
+    /// Parse a [`Value`] of this type from the given [`Reader`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wincode_dynamic::{PrimitiveTy, Value};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let encoded = wincode::serialize(&42u64)?;
+    /// let value = PrimitiveTy::U64.parse(&encoded[..])?;
+    ///
+    /// assert_eq!(value, Value::U64(42));
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[inline]
+    pub fn parse<'de>(self, reader: impl Reader<'de>) -> ReadResult<Value<'de>> {
+        <Value as SchemaReadContext<DefaultConfig, _>>::get_with_context(self, reader)
+    }
+
     #[inline]
     pub const fn size(self) -> usize {
         match self {
@@ -87,11 +107,27 @@ impl PrimitiveTy {
 pub enum Ty {
     PrimitiveTy(PrimitiveTy),
     String,
-    Vec { ty: PrimitiveTy },
+    Vec(PrimitiveTy),
     Array { ty: PrimitiveTy, len: usize },
 }
 
 impl Ty {
+    /// Parse a [`Value`] of this type from the given [`Reader`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wincode_dynamic::{PrimitiveTy, Ty, Value};
+    /// # use std::borrow::Cow;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let encoded = wincode::serialize("w1nc0d3")?;
+    /// let value = Ty::String.parse(&encoded[..])?;
+    ///
+    /// assert_eq!(value, Value::String(Cow::Borrowed("w1nc0d3")));
+    /// # Ok(())
+    /// # }
+    /// ```
     #[inline]
     pub fn parse<'de>(self, mut reader: impl Reader<'de>) -> ReadResult<Value<'de>> {
         match self {
@@ -101,10 +137,10 @@ impl Ty {
             Ty::String => {
                 <Cow<'de, str> as SchemaRead<'de, DefaultConfig>>::get(reader).map(Value::String)
             }
-            Ty::Vec {
-                ty: PrimitiveTy::U8,
-            } => <Cow<[u8]> as SchemaRead<'de, DefaultConfig>>::get(reader).map(Value::Bytes),
-            Ty::Vec { ty } => {
+            Ty::Vec(PrimitiveTy::U8) => {
+                <Cow<[u8]> as SchemaRead<'de, DefaultConfig>>::get(reader).map(Value::Bytes)
+            }
+            Ty::Vec(ty) => {
                 let len = <DefaultLengthEncoding as SeqLen<DefaultConfig>>::read(reader.by_ref())?;
                 read_primitive_payload(ty, len, reader)
             }
@@ -116,12 +152,16 @@ impl Ty {
         }
     }
 
+    /// Get the serialized size of this type, if known.
+    ///
+    /// Primitive types and arrays have a fixed size, while strings and variable
+    /// lengthed sequences (e.g., [`Vec`]) have a variable size.
     #[inline]
     pub const fn size(self) -> Option<usize> {
         match self {
             Ty::PrimitiveTy(ty) => Some(ty.size()),
             Ty::String => None,
-            Ty::Vec { .. } => None,
+            Ty::Vec(..) => None,
             Ty::Array { ty, len } => Some(ty.size() * len),
         }
     }
@@ -194,7 +234,7 @@ impl<T> DynTy for Vec<T>
 where
     T: DynPrimitiveTy,
 {
-    const TYPE: Ty = Ty::Vec { ty: T::TYPE };
+    const TYPE: Ty = Ty::Vec(T::TYPE);
 }
 
 impl<const N: usize, T: DynPrimitiveTy> DynTy for [T; N] {

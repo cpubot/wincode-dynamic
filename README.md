@@ -7,8 +7,30 @@ Runtime schemas and reflective decoding for [`wincode`](https://crates.io/crates
 It decodes the same wincode wire format against a schema value supplied at runtime. Because a schema is itself
 `wincode`-serializable, the usual pattern is to send it as the first payload on a
 connection and then stream values that a peer can
-reflect / iterate over without compile-time knowledge of the schema. Decoding is lazy and borrows from
-the input.
+reflect / iterate over without compile-time knowledge of the schema. Primitive
+values are decoded by value. Strings and the encoded payloads of primitive
+arrays and vectors borrow from the input when the reader supports stable
+borrowing; non-byte arrays and vectors are decoded lazily as they are iterated
+without allocating.
+
+This crate is [no_std](https://docs.rust-embedded.org/book/intro/no-std.html).
+
+## Supported field types
+
+Runtime schemas currently support:
+
+- primitives: `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`, `f32`,
+  `f64`, and `bool`;
+- strings; and
+- arrays and vectors of primitives.
+
+Producers can serialize a slice instead of allocating a `Vec` or `String` as normally with `wincode`;
+both use the same wire format. The decoder returns `u8` sequences as raw bytes and other
+primitive sequences as [`LazyVec`](https://docs.rs/wincode-dynamic/latest/wincode_dynamic/struct.LazyVec.html).
+With a supported reader, this data borrows directly from the input.
+
+Schema generation and dynamic decoding currently support only wincode's
+`DefaultConfig`. Custom wincode configurations are not supported.
 
 ## Send the schema, then values
 
@@ -26,26 +48,30 @@ struct Account {
     executable: bool,
 }
 
-// Producer: announce the schema once, up front...
-let schema = wincode::serialize(&Account::schema())?;
-// ...then stream values encoded with plain `wincode`.
-let record = wincode::serialize(&Account {
-    lamports: 42,
-    owner: [7; 32],
-    executable: true,
-})?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Producer: announce the schema once, up front...
+    let schema = wincode::serialize(&Account::schema())?;
+    // ...then stream values encoded with plain `wincode`.
+    let record = wincode::serialize(&Account {
+        lamports: 42,
+        owner: [7; 32],
+        executable: true,
+    })?;
 
-// Consumer: never had the `Account` type at compile time. Read the schema off the wire...
-let decoder = Decoder::new(wincode::deserialize::<RootSchema>(&schema)?);
+    // Consumer: never had the `Account` type at compile time.
+    // Read the schema off the wire...
+    let decoder = Decoder::new(wincode::deserialize::<RootSchema>(&schema)?);
 
-// ...and reflect over every record that follows.
-for field in decoder.fields(&record[..])? {
-    let field = field?;
-    println!("{} = {:?}", field.name(), field.value());
+    // ...and reflect over every record that follows.
+    for field in decoder.fields(&record[..])? {
+        let field = field?;
+        println!("{} = {:?}", field.name(), field.value());
+    }
+    // lamports = U64(42)
+    // owner = Bytes([7, 7, 7, ...])
+    // executable = Bool(true)
+    Ok(())
 }
-// lamports = U64(42)
-// owner = Bytes([7, 7, 7, ...])
-// executable = Bool(true)
 ```
 
 ## Serialized size metadata

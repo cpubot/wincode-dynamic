@@ -1,3 +1,4 @@
+#![doc = include_str!("../../README.md")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
@@ -15,6 +16,10 @@ mod wincode_extra;
 pub use wincode_dynamic_derive::*;
 pub use {ty::*, value::*};
 
+/// Describes a field in a runtime [`Schema`].
+///
+/// A field definition records the field's name and dynamic type, along with its
+/// encoded size when that size is statically known.
 #[derive(SchemaRead, SchemaWrite, Debug, Clone)]
 pub struct FieldDef {
     name: String,
@@ -22,6 +27,10 @@ pub struct FieldDef {
     size: Option<usize>,
 }
 
+/// A decoded field yielded by [`Decoder::fields`].
+///
+/// The field borrows its metadata from the decoder's schema and its value from
+/// the encoded input data.
 #[derive(Debug, Clone)]
 pub struct Field<'meta, 'data> {
     name: &'meta str,
@@ -58,6 +67,7 @@ impl<'meta, 'data> Field<'meta, 'data> {
 }
 
 impl FieldDef {
+    /// Creates a new [`FieldDef`] with the given name, type, and size.
     pub fn new(name: impl Into<String>, ty: Ty, size: impl Into<Option<usize>>) -> Self {
         Self {
             name: name.into(),
@@ -66,12 +76,68 @@ impl FieldDef {
         }
     }
 
+    /// Returns the field's name.
+    #[inline]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the field's dynamic type.
+    #[inline]
+    pub const fn ty(&self) -> Ty {
+        self.ty
+    }
+
+    /// Returns the field's encoded size when it is statically known.
+    #[inline]
+    pub const fn size(&self) -> Option<usize> {
+        self.size
+    }
+
+    /// Parse a [`Value`] of this field from the given [`Reader`].
     #[inline]
     pub fn parse<'de>(&self, reader: impl Reader<'de>) -> ReadResult<Value<'de>> {
         self.ty.parse(reader)
     }
 }
 
+/// A serializable runtime schema for a top-level struct or enum.
+///
+/// This is the schema value exchanged before encoded values and passed to
+/// [`Decoder::new`] for reflective decoding.
+///
+/// Deriving [`SchemaDynamic`] implements [`schema`](SchemaDynamic::schema) on the
+/// derived type, which generates its `RootSchema`.
+///
+/// # Examples
+///
+/// ```
+/// use wincode::{SchemaRead, SchemaWrite};
+/// use wincode_dynamic::{PrimitiveTy, RootSchema, SchemaDynamic, Ty};
+///
+/// #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+/// struct Message {
+///     id: u64,
+///     active: bool,
+/// }
+///
+/// let schema: RootSchema = Message::schema();
+/// let RootSchema::Struct(schema) = schema else {
+///     panic!("expected a struct schema");
+/// };
+///
+/// assert_eq!(schema.name(), "Message");
+/// assert_eq!(schema.size(), Some(9));
+///
+/// let fields = schema.field_defs();
+/// assert_eq!(fields.len(), 2);
+/// assert_eq!(fields[0].name(), "id");
+/// assert_eq!(fields[0].ty(), Ty::PrimitiveTy(PrimitiveTy::U64));
+/// assert_eq!(fields[0].size(), Some(8));
+/// assert_eq!(fields[1].name(), "active");
+/// assert_eq!(fields[1].ty(), Ty::PrimitiveTy(PrimitiveTy::Bool));
+/// assert_eq!(fields[1].size(), Some(1));
+/// ```
 #[derive(SchemaRead, SchemaWrite, Debug, Clone)]
 #[wincode(tag_encoding = "u8")]
 pub enum RootSchema {
@@ -84,6 +150,10 @@ pub enum RootSchema {
     },
 }
 
+/// Describes the fields and encoded-size metadata of a struct or enum variant.
+///
+/// Enum schemas use one `Schema` per variant, while struct schemas use a single
+/// `Schema` for the root value.
 #[derive(SchemaRead, SchemaWrite, Debug, Clone)]
 pub struct Schema {
     name: String,
@@ -154,6 +224,11 @@ pub trait SchemaDynamic {
     fn schema() -> RootSchema;
 }
 
+/// Decodes a wincode-encoded payload reflectively using a runtime [`RootSchema`].
+///
+/// A decoder only needs to be created once for a given [`RootSchema`] and can
+/// then be reused for every value encoded with that schema. Call
+/// [`Decoder::fields`] to iterate over a value's decoded fields.
 #[derive(Debug)]
 pub struct Decoder {
     schema: RootSchema,
@@ -180,6 +255,52 @@ impl Decoder {
         }
     }
 
+    /// Returns a lazy iterator over the fields in an encoded payload.
+    ///
+    /// Fields are decoded in schema order as the iterator advances. For an enum,
+    /// this method first reads the variant tag and then iterates over that
+    /// variant's fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an enum variant tag is invalid. Errors encountered
+    /// while decoding a field are returned by the corresponding iterator item.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wincode::{SchemaRead, SchemaWrite};
+    /// use wincode_dynamic::{Decoder, RootSchema, SchemaDynamic, Value};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+    /// struct Message {
+    ///     id: u64,
+    ///     active: bool,
+    /// }
+    ///
+    /// let encoded_schema = wincode::serialize(&Message::schema())?;
+    /// let encoded_value = wincode::serialize(&Message {
+    ///     id: 42,
+    ///     active: true,
+    /// })?;
+    ///
+    /// let schema = wincode::deserialize::<RootSchema>(&encoded_schema)?;
+    /// let decoder = Decoder::new(schema);
+    /// let mut fields = decoder.fields(&encoded_value[..])?;
+    ///
+    /// let id = fields.next().expect("id field")?;
+    /// assert_eq!(id.name(), "id");
+    /// assert_eq!(id.value(), &Value::U64(42));
+    ///
+    /// let active = fields.next().expect("active field")?;
+    /// assert_eq!(active.name(), "active");
+    /// assert_eq!(active.value(), &Value::Bool(true));
+    /// assert!(fields.next().is_none());
+    ///
+    /// # Ok(())
+    /// # }
+    /// ```
     #[inline]
     pub fn fields<'a, 'de>(
         &'a self,
@@ -533,12 +654,7 @@ mod test {
 
         let field = result.next().unwrap();
         assert_eq!(field.name(), "vals");
-        assert_eq!(
-            field.ty(),
-            Ty::Vec {
-                ty: PrimitiveTy::U64
-            }
-        );
+        assert_eq!(field.ty(), Ty::Vec(PrimitiveTy::U64));
         assert_eq!(field.size(), None);
         let Value::Vec(vals) = field.value else {
             panic!("expected vals to be a lazy vector");
@@ -582,9 +698,7 @@ mod test {
         assert_field(
             &field,
             "bytes",
-            Ty::Vec {
-                ty: PrimitiveTy::U8,
-            },
+            Ty::Vec(PrimitiveTy::U8),
             None,
             &Value::Bytes(vec![42; 8].into()),
         );
@@ -698,11 +812,9 @@ mod test {
         let mut encoded_len = Vec::new();
         <LengthEncoding as SeqLen<DefaultConfig>>::write(&mut encoded_len, len).unwrap();
 
-        let vector_error = Ty::Vec {
-            ty: PrimitiveTy::U64,
-        }
-        .parse(Cursor::new(encoded_len))
-        .unwrap_err();
+        let vector_error = Ty::Vec(PrimitiveTy::U64)
+            .parse(Cursor::new(encoded_len))
+            .unwrap_err();
         assert!(matches!(
             vector_error,
             wincode::ReadError::PreallocationSizeLimit { needed, limit }
@@ -775,12 +887,7 @@ mod test {
         assert_eq!(variants[2].fields[0].name, "text");
         assert_eq!(variants[2].fields[0].ty, Ty::String);
         assert_eq!(variants[2].fields[1].name, "bytes");
-        assert_eq!(
-            variants[2].fields[1].ty,
-            Ty::Vec {
-                ty: PrimitiveTy::U8
-            }
-        );
+        assert_eq!(variants[2].fields[1].ty, Ty::Vec(PrimitiveTy::U8));
         assert_eq!(variants[2].size, None);
     }
 
@@ -850,9 +957,7 @@ mod test {
                 ),
                 (
                     "bytes",
-                    Ty::Vec {
-                        ty: PrimitiveTy::U8,
-                    },
+                    Ty::Vec(PrimitiveTy::U8),
                     None,
                     Value::Bytes(Cow::Owned(vec![1, 2, 3, 4])),
                 ),
