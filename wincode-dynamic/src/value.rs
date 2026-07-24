@@ -14,22 +14,38 @@ use {
     },
 };
 
+/// An owned, dynamically typed primitive value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PrimitiveValue {
+    /// An unsigned 8-bit integer.
     U8(u8),
+    /// An unsigned 16-bit integer.
     U16(u16),
+    /// An unsigned 32-bit integer.
     U32(u32),
+    /// An unsigned 64-bit integer.
     U64(u64),
+    /// A signed 8-bit integer.
     I8(i8),
+    /// A signed 16-bit integer.
     I16(i16),
+    /// A signed 32-bit integer.
     I32(i32),
+    /// A signed 64-bit integer.
     I64(i64),
+    /// A 32-bit floating-point number.
     F32(f32),
+    /// A 64-bit floating-point number.
     F64(f64),
+    /// A Boolean value.
     Bool(bool),
 }
 
 impl PrimitiveValue {
+    /// Returns the complete encoded width of this primitive, in bytes.
+    ///
+    /// Primitive encodings have no length prefix, so this is also the complete
+    /// serialized size under wincode's [`DefaultConfig`].
     #[inline]
     pub const fn size(self) -> usize {
         match self {
@@ -48,25 +64,52 @@ impl PrimitiveValue {
     }
 }
 
+/// A value decoded from a runtime [`Ty`](crate::Ty).
+///
+/// Scalar primitives are stored by value. Strings and byte payloads use
+/// [`Cow`] so they can borrow from readers that support stable borrowing.
+/// Non-byte primitive arrays and vectors are represented by [`LazyVec`] and
+/// decoded as they are iterated.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value<'a> {
+    /// An unsigned 8-bit integer.
     U8(u8),
+    /// An unsigned 16-bit integer.
     U16(u16),
+    /// An unsigned 32-bit integer.
     U32(u32),
+    /// An unsigned 64-bit integer.
     U64(u64),
+    /// A signed 8-bit integer.
     I8(i8),
+    /// A signed 16-bit integer.
     I16(i16),
+    /// A signed 32-bit integer.
     I32(i32),
+    /// A signed 64-bit integer.
     I64(i64),
+    /// A 32-bit floating-point number.
     F32(f32),
+    /// A 64-bit floating-point number.
     F64(f64),
+    /// A Boolean value.
     Bool(bool),
+    /// A UTF-8 string, borrowed from the input when possible.
     String(Cow<'a, str>),
+    /// A byte array or byte vector, borrowed from the input when possible.
     Bytes(Cow<'a, [u8]>),
+    /// A lazily decoded array or vector of non-byte primitives.
     Vec(LazyVec<'a>),
 }
 
 impl Value<'_> {
+    /// Returns the number of encoded payload bytes held by this value.
+    ///
+    /// For scalar primitives this is their complete encoded width. For
+    /// strings, bytes, and lazy vectors this is only the payload length and
+    /// excludes any length prefix from a dynamically sized string or vector.
+    /// Consequently, this is not necessarily the complete serialized size of
+    /// the original field.
     #[inline]
     pub fn size(&self) -> usize {
         match self {

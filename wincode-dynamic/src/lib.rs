@@ -40,26 +40,34 @@ pub struct Field<'meta, 'data> {
 }
 
 impl<'meta, 'data> Field<'meta, 'data> {
+    /// Returns the field's name.
     #[inline]
     pub const fn name(&self) -> &str {
         self.name
     }
 
+    /// Returns the field's dynamic type.
     #[inline]
     pub const fn ty(&self) -> Ty {
         self.ty
     }
 
+    /// Returns the field's complete encoded size when it is fixed.
+    ///
+    /// The size uses wincode's default configuration. `None` means the field's
+    /// size depends on its value, as it does for strings and vectors.
     #[inline]
     pub const fn size(&self) -> Option<usize> {
         self.size
     }
 
+    /// Returns the decoded value.
     #[inline]
     pub const fn value(&self) -> &Value<'data> {
         &self.value
     }
 
+    /// Consumes the field and returns its decoded value.
     #[inline]
     pub fn into_value(self) -> Value<'data> {
         self.value
@@ -88,7 +96,10 @@ impl FieldDef {
         self.ty
     }
 
-    /// Returns the field's encoded size when it is statically known.
+    /// Returns the field's complete encoded size when it is fixed.
+    ///
+    /// The size uses wincode's default configuration. `None` means the field's
+    /// size depends on its value, as it does for strings and vectors.
     #[inline]
     pub const fn size(&self) -> Option<usize> {
         self.size
@@ -141,11 +152,17 @@ impl FieldDef {
 #[derive(SchemaRead, SchemaWrite, Debug, Clone)]
 #[wincode(tag_encoding = "u8")]
 pub enum RootSchema {
+    /// The schema of a struct.
     Struct(Schema),
+    /// The schema of an enum.
     Enum {
+        /// The field schema for each variant, in declaration order.
         variants: Box<[Schema]>,
+        /// The complete encoded size, including the tag, when it is fixed.
         size: Option<usize>,
+        /// The enum type's name.
         name: String,
+        /// The primitive type used to encode the variant tag.
         tag_encoding: PrimitiveTy,
     },
 }
@@ -162,6 +179,7 @@ pub struct Schema {
 }
 
 impl Schema {
+    /// Creates a schema with the given name, fields, and fixed-size metadata.
     pub fn new(
         name: impl Into<String>,
         fields: Box<[FieldDef]>,
@@ -174,16 +192,24 @@ impl Schema {
         }
     }
 
+    /// Returns the complete encoded size of this schema when it is fixed.
+    ///
+    /// For a root struct, this is the complete struct encoding. For an enum
+    /// variant, it covers the variant's fields but not the enum tag. The size
+    /// uses wincode's default configuration; `None` means it depends on the
+    /// encoded value.
     #[inline]
     pub const fn size(&self) -> Option<usize> {
         self.size
     }
 
+    /// Returns the struct or enum variant name.
     #[inline]
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// Returns the fields in their encoded order.
     #[inline]
     pub const fn field_defs(&self) -> &[FieldDef] {
         &self.fields
@@ -221,6 +247,7 @@ pub trait SchemaDynamic {
     /// [`Decoder`].
     const SERIALIZED_SIZE: SerializedSize = SerializedSize::Dynamic(0);
 
+    /// Generates the type's serializable runtime schema.
     fn schema() -> RootSchema;
 }
 
@@ -235,10 +262,12 @@ pub struct Decoder {
 }
 
 impl Decoder {
+    /// Creates a decoder for `schema`.
     pub fn new(schema: RootSchema) -> Self {
         Self { schema }
     }
 
+    /// Returns the root struct or enum name.
     #[inline]
     pub fn name(&self) -> &str {
         match &self.schema {
@@ -247,6 +276,10 @@ impl Decoder {
         }
     }
 
+    /// Returns the complete encoded size of a root value when it is fixed.
+    ///
+    /// For enums, this includes the variant tag. The size uses wincode's
+    /// default configuration; `None` means it depends on the encoded value.
     #[inline]
     pub const fn size(&self) -> Option<usize> {
         match &self.schema {
