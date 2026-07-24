@@ -44,7 +44,8 @@ pub(crate) struct Field {
 }
 
 impl Field {
-    /// Return the field's wire type, resolving wincode's `_` shorthand from the Rust field type.
+    /// Return the field's wire type, resolving wincode's `_` shorthand from the
+    /// Rust field type.
     pub(crate) fn target_resolved(&self) -> Type {
         let Some(with) = &self.with else {
             return self.ty.clone();
@@ -60,7 +61,8 @@ impl Field {
     }
 }
 
-/// Generic arguments collected in the same order wincode uses to resolve adapter placeholders.
+/// Generic arguments collected in the same order wincode uses to resolve
+/// adapter placeholders.
 #[derive(Default)]
 struct GenericTypes(VecDeque<Type>);
 
@@ -129,8 +131,9 @@ pub(crate) struct Args {
     pub(crate) internal: bool,
     /// Specifies the path to the crate.
     ///
-    /// Useful when the crate is renamed in `Cargo.toml` or re-exported from another module.
-    /// The path is emitted as written and resolved from the derive expansion site.
+    /// Useful when the crate is renamed in `Cargo.toml` or re-exported from
+    /// another module. The path is emitted as written and resolved from the
+    /// derive expansion site.
     #[darling(rename = "crate", default)]
     pub(crate) crate_path: Option<Path>,
     #[darling(default)]

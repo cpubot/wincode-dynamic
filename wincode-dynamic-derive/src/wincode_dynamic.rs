@@ -70,9 +70,10 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
     let mut impl_generics = args.generics.clone();
     {
         let where_clause = impl_generics.make_where_clause();
-        // SERIALIZED_SIZE and the runtime schema consult the container's own TYPE_META. Keep those
-        // requirements explicit because wincode's implementations may have bounds beyond the
-        // field adapters below, particularly for generic fields annotated with `skip` or `with`.
+        // SERIALIZED_SIZE and the runtime schema consult the container's own TYPE_META.
+        // Keep those requirements explicit because wincode's implementations
+        // may have bounds beyond the field adapters below, particularly for
+        // generic fields annotated with `skip` or `with`.
         where_clause.predicates.push(parse_quote!(
             #ident #ty_generics:
                 wincode::SchemaWrite<wincode::config::DefaultConfig>
@@ -100,8 +101,8 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
                         Dst = #ty,
                     >
             ));
-            // The runtime schema above is read-oriented, but SERIALIZED_SIZE describes bytes
-            // produced by the field's effective serialization type.
+            // The runtime schema above is read-oriented, but SERIALIZED_SIZE describes
+            // bytes produced by the field's effective serialization type.
             let target = field.target_resolved();
             where_clause.predicates.push(parse_quote!(
                 #target: wincode::SchemaWrite<
@@ -129,8 +130,9 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
                 <wincode::config::DefaultConfig as wincode::config::Config>::TagEncoding
             })
         });
-    // Keep the const-evaluation machinery local to the anonymous const emitted by the derive. This
-    // avoids adding derive implementation details to wincode-dynamic's public API.
+    // Keep the const-evaluation machinery local to the anonymous const emitted by
+    // the derive. This avoids adding derive implementation details to
+    // wincode-dynamic's public API.
     let max_serialized_size_helper = quote! {
         const fn serialized_size(
             type_meta: wincode::TypeMeta,
@@ -205,8 +207,9 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
         }
     };
 
-    // SchemaWrite owns the serialized representation. SchemaRead currently reports the same sizes
-    // for wincode's primitive types, but using SchemaWrite makes the contract explicit.
+    // SchemaWrite owns the serialized representation. SchemaRead currently reports
+    // the same sizes for wincode's primitive types, but using SchemaWrite makes
+    // the contract explicit.
     let max_serialized_size = match &args.data {
         Data::Struct(fields) => {
             let field_type_metas = fields.iter().map(field_write_type_meta);
@@ -218,8 +221,9 @@ pub(crate) fn generate(input: DeriveInput) -> Result<TokenStream> {
             }
         }
         Data::Enum(variants) => {
-            // Wincode marks an enum Dynamic when its variants have different sizes. Aggregate the
-            // sequential fields within each variant, then retain the largest known contribution.
+            // Wincode marks an enum Dynamic when its variants have different sizes.
+            // Aggregate the sequential fields within each variant, then retain
+            // the largest known contribution.
             let variant_sizes = variants.iter().map(|variant| {
                 let field_type_metas = variant.fields.iter().map(field_write_type_meta);
                 quote! {

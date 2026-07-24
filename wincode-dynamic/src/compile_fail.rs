@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
-/// Deliberately invalid metadata must fail instead of wrapping the serialized size.
+/// Deliberately invalid metadata must fail instead of wrapping the serialized
+/// size.
 ///
 /// ```compile_fail,E0080
 /// use {

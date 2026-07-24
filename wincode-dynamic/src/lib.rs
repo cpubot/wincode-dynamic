@@ -119,8 +119,8 @@ impl FieldDef {
 /// This is the schema value exchanged before encoded values and passed to
 /// [`Decoder::new`] for reflective decoding.
 ///
-/// Deriving [`SchemaDynamic`] implements [`schema`](SchemaDynamic::schema) on the
-/// derived type, which generates its `RootSchema`.
+/// Deriving [`SchemaDynamic`] implements [`schema`](SchemaDynamic::schema) on
+/// the derived type, which generates its `RootSchema`.
 ///
 /// # Examples
 ///
@@ -223,10 +223,11 @@ impl Schema {
 pub enum SerializedSize {
     /// Every serialized value fits within this many bytes.
     ///
-    /// Individual values may be smaller, such as enum variants with different encoded sizes.
+    /// Individual values may be smaller, such as enum variants with different
+    /// encoded sizes.
     Static(usize),
-    /// A complete upper bound cannot be derived, but statically sized fields contribute at most
-    /// this many bytes.
+    /// A complete upper bound cannot be derived, but statically sized fields
+    /// contribute at most this many bytes.
     Dynamic(usize),
 }
 
@@ -234,18 +235,22 @@ pub enum SerializedSize {
 pub trait SchemaDynamic {
     /// Serialized-size information under wincode's default configuration.
     ///
-    /// - [`SerializedSize::Static`] means the entire encoding has a finite maximum. Its value is
-    ///   the maximum number of serialized bytes; individual enum variants may be smaller.
-    /// - [`SerializedSize::Dynamic`] means a complete upper bound cannot be derived from wincode's
-    ///   type metadata. Its value is the portion that can still be determined statically: the sum
-    ///   of fixed-size fields for a struct, or the tag plus the largest fixed-size portion of any
-    ///   enum variant.
+    /// - [`SerializedSize::Static`] means the entire encoding has a finite
+    ///   maximum. Its value is the maximum number of serialized bytes;
+    ///   individual enum variants may be smaller.
+    /// - [`SerializedSize::Dynamic`] means a complete upper bound cannot be
+    ///   derived from wincode's type metadata. Its value is the portion that
+    ///   can still be determined statically: the sum of fixed-size fields for a
+    ///   struct, or the tag plus the largest fixed-size portion of any enum
+    ///   variant.
     ///
-    /// This constant is sizing metadata; it does not impose or validate a serialization limit.
+    /// This constant is sizing metadata; it does not impose or validate a
+    /// serialization limit.
     ///
-    /// A `#[wincode(with = ...)]` adapter supplies the field's serialized-size metadata, but the
-    /// runtime [`RootSchema`] continues to describe the Rust field's [`DynTy`]. Such an adapter
-    /// must therefore preserve that field's wire representation when the schema is used with
+    /// A `#[wincode(with = ...)]` adapter supplies the field's serialized-size
+    /// metadata, but the runtime [`RootSchema`] continues to describe the
+    /// Rust field's [`DynTy`]. Such an adapter must therefore preserve that
+    /// field's wire representation when the schema is used with
     /// [`Decoder`].
     const SERIALIZED_SIZE: SerializedSize = SerializedSize::Dynamic(0);
 
@@ -253,7 +258,8 @@ pub trait SchemaDynamic {
     fn schema() -> RootSchema;
 }
 
-/// Decodes a wincode-encoded payload reflectively using a runtime [`RootSchema`].
+/// Decodes a wincode-encoded payload reflectively using a runtime
+/// [`RootSchema`].
 ///
 /// A decoder only needs to be created once for a given [`RootSchema`] and can
 /// then be reused for every value encoded with that schema. Call
@@ -292,9 +298,9 @@ impl Decoder {
 
     /// Returns a lazy iterator over the fields in an encoded payload.
     ///
-    /// Fields are decoded in schema order as the iterator advances. For an enum,
-    /// this method first reads the variant tag and then iterates over that
-    /// variant's fields.
+    /// Fields are decoded in schema order as the iterator advances. For an
+    /// enum, this method first reads the variant tag and then iterates over
+    /// that variant's fields.
     ///
     /// # Errors
     ///
@@ -470,8 +476,8 @@ mod test {
         Flag(bool),
     }
 
-    // Keep this in a module so the lint allowance needed by SchemaRead's empty-enum expansion
-    // does not apply to the rest of the tests.
+    // Keep this in a module so the lint allowance needed by SchemaRead's empty-enum
+    // expansion does not apply to the rest of the tests.
     mod empty_enum {
         #![allow(unreachable_code)]
 

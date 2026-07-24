@@ -189,14 +189,15 @@ pub mod lazy_vec {
         /// Returns a borrowing, lazy iterator of `As` values.
         ///
         /// The requested type must match the primitive element type recorded in
-        /// the schema. This prevents, for example, interpreting the payload of a
-        /// `Vec<u64>` as a sequence of `u8` values.
+        /// the schema. This prevents, for example, interpreting the payload of
+        /// a `Vec<u64>` as a sequence of `u8` values.
         ///
         /// This method validates the element type and its width, but it does
-        /// not decode any elements. Decoding happens as the returned iterator is
-        /// advanced, and each item is returned as a [`ReadResult`]. Consequently,
-        /// malformed element encodings are reported by the iterator item that
-        /// encounters them rather than by this method.
+        /// not decode any elements. Decoding happens as the returned iterator
+        /// is advanced, and each item is returned as a [`ReadResult`].
+        /// Consequently, malformed element encodings are reported by
+        /// the iterator item that encounters them rather than by this
+        /// method.
         ///
         /// The iterator borrows this lazy vector. Multiple iterators can be
         /// created without cloning or decoding the payload.
@@ -208,7 +209,8 @@ pub mod lazy_vec {
         ///
         /// Returns an error if:
         ///
-        /// - `As` does not match the vector's recorded primitive element type; or
+        /// - `As` does not match the vector's recorded primitive element type;
+        ///   or
         /// - the size of `As` does not match the recorded element width.
         ///
         /// # Examples
@@ -260,8 +262,8 @@ pub mod lazy_vec {
         ///
         /// This performs the same type validation as [`Self::try_iter_as`], but
         /// consumes the lazy vector and moves its payload into the iterator.
-        /// Borrowed payloads remain borrowed, and owned payloads are moved without
-        /// cloning or reallocating them.
+        /// Borrowed payloads remain borrowed, and owned payloads are moved
+        /// without cloning or reallocating them.
         ///
         /// # Errors
         ///

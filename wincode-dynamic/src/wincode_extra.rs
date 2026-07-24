@@ -1,5 +1,4 @@
 //! wincode extensions
-//!
 
 use {
     alloc::vec::Vec,
@@ -12,7 +11,8 @@ use {
     },
 };
 
-// Map adapter that reads a sequence of `A` values and maps them to `B` values using `f`.
+// Map adapter that reads a sequence of `A` values and maps them to `B` values
+// using `f`.
 //
 // Avoids intermediate collects and writes directly as `Vec<B>`.
 //
