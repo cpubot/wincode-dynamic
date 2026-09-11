@@ -22,7 +22,7 @@ mod proptest_config;
 ///
 /// A field definition records the field's name and dynamic type, along with its
 /// encoded size when that size is statically known.
-#[derive(SchemaRead, SchemaWrite, Debug, Clone)]
+#[derive(SchemaRead, SchemaWrite, Debug, Clone, PartialEq)]
 pub struct FieldDef {
     name: String,
     ty: Ty,
@@ -151,7 +151,7 @@ impl FieldDef {
 /// assert_eq!(fields[1].ty(), Ty::PrimitiveTy(PrimitiveTy::Bool));
 /// assert_eq!(fields[1].size(), Some(1));
 /// ```
-#[derive(SchemaRead, SchemaWrite, Debug, Clone)]
+#[derive(SchemaRead, SchemaWrite, Debug, Clone, PartialEq)]
 #[wincode(tag_encoding = "u8")]
 pub enum RootSchema {
     /// The schema of a struct.
@@ -202,7 +202,7 @@ impl RootSchema {
 ///
 /// Enum schemas use one `Schema` per variant, while struct schemas use a single
 /// `Schema` for the root value.
-#[derive(SchemaRead, SchemaWrite, Debug, Clone)]
+#[derive(SchemaRead, SchemaWrite, Debug, Clone, PartialEq)]
 pub struct Schema {
     name: String,
     fields: Box<[FieldDef]>,
