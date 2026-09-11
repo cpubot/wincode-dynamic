@@ -64,7 +64,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Consumer: never had the `Account` type at compile time.
     // Read the schema off the wire...
-    let decoder = Decoder::new(wincode::deserialize::<RootSchema>(&schema)?);
+    let schema = wincode::deserialize::<RootSchema>(&schema)?;
+    let decoder = Decoder::new(&schema);
 
     // ...and reflect over every record that follows.
     for field in decoder.fields(&record[..])? {

@@ -228,7 +228,8 @@ pub mod lazy_vec {
         ///     values: vec![10, 20, 30],
         /// })
         /// .expect("serialize message");
-        /// let decoder = Decoder::new(Message::schema());
+        /// let schema = Message::schema();
+        /// let decoder = Decoder::new(&schema);
         /// let mut fields = decoder.fields(encoded.as_slice())?;
         ///
         /// let field = fields.next().expect("values field")?;
