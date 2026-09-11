@@ -169,6 +169,35 @@ pub enum RootSchema {
     },
 }
 
+impl RootSchema {
+    /// Returns the root struct or enum name.
+    #[inline]
+    pub fn name(&self) -> &str {
+        match self {
+            RootSchema::Struct(schema) => &schema.name,
+            RootSchema::Enum { name, .. } => name,
+        }
+    }
+
+    /// Returns the complete encoded size of a root value when it is fixed.
+    ///
+    /// For enums, this includes the variant tag. The size uses wincode's
+    /// default configuration; `None` means it depends on the encoded value.
+    #[inline]
+    pub const fn size(&self) -> Option<usize> {
+        match self {
+            RootSchema::Struct(schema) => schema.size,
+            RootSchema::Enum { size, .. } => *size,
+        }
+    }
+
+    /// Creates a decoder for encoded values of this schema.
+    #[inline]
+    pub fn decoder(&self) -> Decoder<'_> {
+        Decoder::new(self)
+    }
+}
+
 /// Describes the fields and encoded-size metadata of a struct or enum variant.
 ///
 /// Enum schemas use one `Schema` per variant, while struct schemas use a single
@@ -216,6 +245,34 @@ impl Schema {
     pub const fn field_defs(&self) -> &[FieldDef] {
         &self.fields
     }
+
+    /// Creates an iterator that lazily decodes the payload, yielding decoded
+    /// fields in schema order.
+    ///
+    /// The reader must supply a wincode-encoded value matching this schema,
+    /// positioned at its first field. For an enum variant, the variant tag
+    /// must already have been consumed; use
+    /// [`EnumDecoder::decode_variant`] to select the variant and read its tag.
+    ///
+    /// Creating the iterator does not read from the input and cannot fail.
+    /// Each field is decoded as the iterator advances, with decoding errors
+    /// returned by the corresponding iterator item.
+    /// Dropping the iterator early leaves the remaining fields unread.
+    #[inline]
+    pub fn fields<'de>(
+        &self,
+        mut reader: impl Reader<'de>,
+    ) -> impl Iterator<Item = ReadResult<Field<'_, 'de>>> {
+        self.fields.iter().map(move |field| {
+            let value = field.parse(reader.by_ref())?;
+            Ok(Field {
+                name: &field.name,
+                ty: field.ty,
+                size: field.size,
+                value,
+            })
+        })
+    }
 }
 
 /// Information known at compile time about a type's serialized size.
@@ -261,38 +318,83 @@ pub trait SchemaDynamic {
 /// Decodes a wincode-encoded payload reflectively using a runtime
 /// [`RootSchema`].
 ///
-/// A decoder only needs to be created once for a given [`RootSchema`] and can
-/// then be reused for every value encoded with that schema. Call
-/// [`Decoder::fields`] to iterate over a value's decoded fields.
+/// A decoder borrows its [`RootSchema`] and can be reused for every value
+/// encoded with that schema. Create one with [`RootSchema::decoder`] or
+/// [`Decoder::new`].
+///
+/// Call [`Decoder::fields`] to iterate lazily over a payload's fields for
+/// either a struct or an enum. For enums, this reads the variant tag and
+/// selects its fields automatically.
+///
+/// Match on the decoder when the distinction between structs and enums matters:
+///
+/// - [`Decoder::Struct`] exposes a [`SchemaDecoder`]. Its
+///   [`fields`](SchemaDecoder::fields) method creates the iterator infallibly,
+///   since there is no variant tag to read.
+/// - [`Decoder::Enum`] exposes an [`EnumDecoder`]. Call
+///   [`decode_variant`](EnumDecoder::decode_variant) to read and validate the
+///   variant tag, returning a [`VariantDecoder`]. Its
+///   [`variant_name`](VariantDecoder::variant_name) is always available,
+///   including for unit variants. Then consume it with
+///   [`fields`](VariantDecoder::fields) to iterate over the selected fields.
+///   The tag is read once; field iteration continues from the reader's
+///   resulting position.
+///
+/// In every path, individual fields are decoded as the iterator advances, and
+/// field decoding errors are returned by the corresponding iterator item.
+///
+/// # Examples
+///
+/// Inspect an enum variant before decoding its fields using the same reader:
+///
+/// ```
+/// use wincode::{SchemaRead, SchemaWrite};
+/// use wincode_dynamic::{Decoder, SchemaDynamic, Value};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// #[derive(SchemaDynamic, SchemaRead, SchemaWrite)]
+/// enum Message {
+///     Ping,
+///     Value(u64),
+/// }
+///
+/// let schema = Message::schema();
+/// let Decoder::Enum(decoder) = schema.decoder() else {
+///     panic!("expected an enum schema");
+/// };
+///
+/// let encoded = wincode::serialize(&Message::Value(42))?;
+/// let mut reader = &encoded[..];
+/// let variant = decoder.decode_variant(reader)?;
+/// let name = variant.variant_name();
+/// let mut fields = variant.fields();
+/// assert_eq!(name, "Value");
+/// assert_eq!(fields.next().expect("value field")?.value(), &Value::U64(42));
+/// assert!(fields.next().is_none());
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
-pub struct Decoder {
-    schema: RootSchema,
+pub enum Decoder<'schema> {
+    /// A decoder for struct payloads.
+    Struct(SchemaDecoder<'schema>),
+    /// A decoder for selecting and decoding enum variants.
+    Enum(EnumDecoder<'schema>),
 }
 
-impl Decoder {
-    /// Creates a decoder for `schema`.
-    pub fn new(schema: RootSchema) -> Self {
-        Self { schema }
-    }
-
-    /// Returns the root struct or enum name.
-    #[inline]
-    pub fn name(&self) -> &str {
-        match &self.schema {
-            RootSchema::Struct(schema) => &schema.name,
-            RootSchema::Enum { name, .. } => name,
-        }
-    }
-
-    /// Returns the complete encoded size of a root value when it is fixed.
-    ///
-    /// For enums, this includes the variant tag. The size uses wincode's
-    /// default configuration; `None` means it depends on the encoded value.
-    #[inline]
-    pub const fn size(&self) -> Option<usize> {
-        match &self.schema {
-            RootSchema::Struct(schema) => schema.size,
-            RootSchema::Enum { size, .. } => *size,
+impl<'schema> Decoder<'schema> {
+    /// Creates a decoder for encoded values matching the borrowed schema.
+    pub fn new(schema: &'schema RootSchema) -> Self {
+        match schema {
+            RootSchema::Struct(schema) => Self::Struct(SchemaDecoder(schema)),
+            RootSchema::Enum {
+                variants,
+                tag_encoding,
+                ..
+            } => Self::Enum(EnumDecoder {
+                variants,
+                tag_encoding: *tag_encoding,
+            }),
         }
     }
 
@@ -301,6 +403,7 @@ impl Decoder {
     /// Fields are decoded in schema order as the iterator advances. For an
     /// enum, this method first reads the variant tag and then iterates over
     /// that variant's fields.
+    /// Dropping the iterator early leaves the remaining fields unread.
     ///
     /// # Errors
     ///
@@ -327,7 +430,7 @@ impl Decoder {
     /// })?;
     ///
     /// let schema = wincode::deserialize::<RootSchema>(&encoded_schema)?;
-    /// let decoder = Decoder::new(schema);
+    /// let decoder = Decoder::new(&schema);
     /// let mut fields = decoder.fields(&encoded_value[..])?;
     ///
     /// let id = fields.next().expect("id field")?;
@@ -343,35 +446,126 @@ impl Decoder {
     /// # }
     /// ```
     #[inline]
-    pub fn fields<'a, 'de>(
-        &'a self,
-        mut reader: impl Reader<'de> + 'a,
-    ) -> ReadResult<impl Iterator<Item = ReadResult<Field<'a, 'de>>> + 'a> {
-        let fields = match &self.schema {
-            RootSchema::Struct(schema) => &schema.fields,
-            RootSchema::Enum {
-                variants,
-                tag_encoding,
-                ..
-            } => {
-                let disc = tag_encoding.parse_into_usize(reader.by_ref())?;
-
-                &variants
-                    .get(disc)
-                    .ok_or_else(|| invalid_tag_encoding(disc))?
-                    .fields
+    pub fn fields<'de, R: Reader<'de>>(
+        &self,
+        reader: R,
+    ) -> ReadResult<impl Iterator<Item = ReadResult<Field<'schema, 'de>>> + use<'schema, 'de, R>>
+    {
+        let (schema, reader) = match self {
+            Self::Struct(decoder) => (decoder.0, reader),
+            Self::Enum(decoder) => {
+                let variant = decoder.decode_variant(reader)?;
+                (variant.schema, variant.reader)
             }
         };
 
-        Ok(fields.iter().map(move |field| {
-            let value = field.parse(reader.by_ref())?;
-            Ok(Field {
-                name: &field.name,
-                ty: field.ty,
-                size: field.size,
-                value,
-            })
-        }))
+        Ok(schema.fields(reader))
+    }
+}
+
+/// Decodes struct payloads using a borrowed [`Schema`].
+///
+/// Obtained from [`Decoder::Struct`]. Call [`fields`](Self::fields) to lazily
+/// decode a payload's fields.
+#[derive(Debug)]
+pub struct SchemaDecoder<'schema>(&'schema Schema);
+
+impl<'schema> SchemaDecoder<'schema> {
+    /// Creates an iterator that lazily decodes the payload, yielding decoded
+    /// fields in schema order.
+    ///
+    /// The reader must supply a wincode-encoded struct matching this schema,
+    /// positioned at its first field.
+    ///
+    /// Creating the iterator does not read from the input and cannot fail.
+    /// Each field is decoded as the iterator advances, with decoding errors
+    /// returned by the corresponding iterator item.
+    /// Dropping the iterator early leaves the remaining fields unread.
+    #[inline]
+    pub fn fields<'de, R: Reader<'de>>(
+        &self,
+        reader: R,
+    ) -> impl Iterator<Item = ReadResult<Field<'schema, 'de>>> + use<'schema, 'de, R> {
+        self.0.fields(reader)
+    }
+}
+
+/// Decodes enum payloads using borrowed variant schemas.
+///
+/// Obtained from [`Decoder::Enum`]. Call
+/// [`decode_variant`](Self::decode_variant) to read a payload's variant tag and
+/// obtain a [`VariantDecoder`] for inspecting its name and lazily decoding its
+/// fields.
+#[derive(Debug)]
+pub struct EnumDecoder<'schema> {
+    variants: &'schema [Schema],
+    tag_encoding: PrimitiveTy,
+}
+
+impl<'schema> EnumDecoder<'schema> {
+    /// Reads an enum payload's variant tag and returns a decoder for that
+    /// variant.
+    ///
+    /// The reader must supply an encoded enum value matching this decoder's
+    /// schema, positioned at its variant tag. The returned [`VariantDecoder`]
+    /// exposes the variant's name and retains the reader positioned at its
+    /// fields, which are decoded lazily by [`VariantDecoder::fields`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tag cannot be read or does not identify a
+    /// variant in the schema.
+    #[inline]
+    pub fn decode_variant<'de, R: Reader<'de>>(
+        &self,
+        mut reader: R,
+    ) -> ReadResult<VariantDecoder<'schema, R>> {
+        let disc = self.tag_encoding.parse_into_usize(reader.by_ref())?;
+
+        let schema = self
+            .variants
+            .get(disc)
+            .ok_or_else(|| invalid_tag_encoding(disc))?;
+        Ok(VariantDecoder { schema, reader })
+    }
+}
+
+/// Decodes the fields of a selected enum variant.
+///
+/// Returned by [`EnumDecoder::decode_variant`] after reading and validating
+/// the variant tag. Holds the selected schema and the reader positioned at
+/// the variant's first field. Call [`variant_name`](Self::variant_name) to
+/// inspect its name, then consume the decoder with [`fields`](Self::fields)
+/// to lazily decode its fields.
+#[derive(Debug)]
+pub struct VariantDecoder<'schema, R> {
+    schema: &'schema Schema,
+    reader: R,
+}
+
+impl<'schema, R> VariantDecoder<'schema, R> {
+    /// Returns the selected enum variant's name.
+    #[inline]
+    pub fn variant_name(&self) -> &'schema str {
+        &self.schema.name
+    }
+
+    /// Consumes this decoder, creating an iterator that lazily yields the
+    /// selected variant's decoded fields in schema order.
+    ///
+    /// Iteration uses the retained reader, continuing after the variant tag
+    /// already consumed by [`EnumDecoder::decode_variant`].
+    ///
+    /// Creating the iterator does not read from the input and cannot fail.
+    /// Each field is decoded as the iterator advances, with decoding errors
+    /// returned by the corresponding iterator item.
+    /// Dropping the iterator early leaves the remaining fields unread.
+    #[inline]
+    pub fn fields<'de>(self) -> impl Iterator<Item = ReadResult<Field<'schema, 'de>>>
+    where
+        R: Reader<'de>,
+    {
+        self.schema.fields(self.reader)
     }
 }
 
@@ -596,7 +790,8 @@ mod test {
         };
         let _ = &opaque.skipped;
         let payload = wincode::serialize(&opaque).unwrap();
-        let decoder = Decoder::new(OpaqueSkippedField::schema());
+        let schema = OpaqueSkippedField::schema();
+        let decoder = Decoder::new(&schema);
         let fields = decoder
             .fields(payload.as_slice())
             .unwrap()
@@ -617,7 +812,8 @@ mod test {
             after: 2,
         };
         let payload = wincode::serialize(&message).unwrap();
-        let decoder = Decoder::new(SkippedFieldStruct::schema());
+        let schema = SkippedFieldStruct::schema();
+        let decoder = Decoder::new(&schema);
         let fields = decoder
             .fields(payload.as_slice())
             .unwrap()
@@ -641,7 +837,8 @@ mod test {
 
         let message = SkippedFieldEnum::Skipped("not serialized".into(), true);
         let payload = wincode::serialize(&message).unwrap();
-        let decoder = Decoder::new(SkippedFieldEnum::schema());
+        let schema = SkippedFieldEnum::schema();
+        let decoder = Decoder::new(&schema);
         let fields = decoder
             .fields(payload.as_slice())
             .unwrap()
@@ -670,7 +867,7 @@ mod test {
         };
 
         let schema = StructMessage::schema();
-        let decoder = Decoder::new(schema);
+        let decoder = Decoder::new(&schema);
 
         let payload = wincode::serialize(&message).unwrap();
         let result = decoder
@@ -797,7 +994,8 @@ mod test {
         .unwrap();
         *payload.last_mut().unwrap() = 2;
 
-        let decoder = Decoder::new(Bools::schema());
+        let schema = Bools::schema();
+        let decoder = Decoder::new(&schema);
         let value = decoder
             .fields(payload.as_slice())
             .unwrap()
@@ -869,7 +1067,8 @@ mod test {
         storage[offset..offset + payload.len()].copy_from_slice(&payload);
         let payload = &storage[offset..offset + payload.len()];
 
-        let decoder = Decoder::new(Message::schema());
+        let schema = Message::schema();
+        let decoder = Decoder::new(&schema);
         let field = decoder.fields(payload).unwrap().next().unwrap().unwrap();
         let Value::Vec(values) = field.value() else {
             panic!("expected a lazy vector");
@@ -986,7 +1185,8 @@ mod test {
         };
         assert_eq!(tag_encoding, PrimitiveTy::U8);
 
-        let decoder = Decoder::new(U8EnumMessage::schema());
+        let schema = U8EnumMessage::schema();
+        let decoder = Decoder::new(&schema);
 
         let ping = wincode::serialize(&U8EnumMessage::Ping).unwrap();
         assert_eq!(decoder.fields(ping.as_slice()).unwrap().count(), 0);
@@ -1008,8 +1208,111 @@ mod test {
     }
 
     #[test]
+    fn enum_variants_decode_consecutively_from_a_mutable_reader() {
+        let schema = U8EnumMessage::schema();
+        let Decoder::Enum(decoder) = schema.decoder() else {
+            panic!("expected an enum decoder");
+        };
+        let records = [
+            (U8EnumMessage::Value(42), "Value", vec![Value::U64(42)]),
+            (U8EnumMessage::Ping, "Ping", vec![]),
+            (U8EnumMessage::Value(7), "Value", vec![Value::U64(7)]),
+        ];
+        let encoded = records
+            .iter()
+            .map(|(message, _, _)| wincode::serialize(message).unwrap())
+            .collect::<Vec<_>>();
+        let payload = encoded.concat();
+        let mut reader = payload.as_slice();
+        let mut consumed = 0;
+
+        for ((_, expected_name, expected_fields), record) in records.iter().zip(&encoded) {
+            let variant = decoder.decode_variant(&mut reader).unwrap();
+            assert_eq!(variant.variant_name(), *expected_name);
+            let fields = variant
+                .fields()
+                .map(|field| field.map(Field::into_value))
+                .collect::<ReadResult<Vec<_>>>()
+                .unwrap();
+            assert_eq!(&fields, expected_fields);
+            consumed += record.len();
+            assert_eq!(reader, &payload[consumed..]);
+        }
+        assert!(reader.is_empty());
+    }
+
+    #[test]
+    fn decoded_fields_and_variant_names_outlive_decoder_wrappers() {
+        let schema = FixedSizeMessage::schema();
+        let payload = wincode::serialize(&FixedSizeMessage {
+            value: 42,
+            enabled: true,
+        })
+        .unwrap();
+
+        let fields = {
+            let decoder = schema.decoder();
+            decoder.fields(payload.as_slice()).unwrap()
+        };
+        let fields = fields.collect::<ReadResult<Vec<_>>>().unwrap();
+        assert_eq!(fields[0].name(), "value");
+        assert_eq!(fields[0].value(), &Value::U64(42));
+        assert_eq!(fields[1].value(), &Value::Bool(true));
+
+        let fields = {
+            let Decoder::Struct(decoder) = schema.decoder() else {
+                panic!("expected a struct decoder");
+            };
+            decoder.fields(payload.as_slice())
+        };
+        let fields = fields.collect::<ReadResult<Vec<_>>>().unwrap();
+        assert_eq!(fields[0].name(), "value");
+        assert_eq!(fields[0].value(), &Value::U64(42));
+        assert_eq!(fields[1].value(), &Value::Bool(true));
+
+        let schema = U8EnumMessage::schema();
+        let payload = wincode::serialize(&U8EnumMessage::Value(7)).unwrap();
+        let variant = {
+            let Decoder::Enum(decoder) = schema.decoder() else {
+                panic!("expected an enum decoder");
+            };
+            decoder.decode_variant(payload.as_slice()).unwrap()
+        };
+        let name = variant.variant_name();
+        let fields = variant.fields().collect::<ReadResult<Vec<_>>>().unwrap();
+        assert_eq!(name, "Value");
+        assert_eq!(fields[0].name(), "0");
+        assert_eq!(fields[0].value(), &Value::U64(7));
+    }
+
+    #[test]
+    fn dropping_field_iterator_leaves_remaining_fields_unread() {
+        let schema = FixedSizeMessage::schema();
+        let payload = wincode::serialize(&FixedSizeMessage {
+            value: 42,
+            enabled: true,
+        })
+        .unwrap();
+        let decoder = schema.decoder();
+        let mut reader = payload.as_slice();
+        let mut fields = decoder.fields(&mut reader).unwrap();
+        let field = fields.next().unwrap().unwrap();
+        drop(fields);
+
+        assert_eq!(field.name(), "value");
+        assert_eq!(field.value(), &Value::U64(42));
+        assert_eq!(reader, wincode::serialize(&true).unwrap().as_slice());
+        assert_eq!(
+            PrimitiveTy::Bool.parse(&mut reader).unwrap(),
+            Value::Bool(true)
+        );
+        assert!(reader.is_empty());
+    }
+
+    #[test]
     fn enum_roundtrips_every_variant_shape() {
-        let decoder = Decoder::new(EnumMessage::schema());
+        let schema = EnumMessage::schema();
+        let decoder = Decoder::new(&schema);
 
         assert_enum_message(&decoder, &EnumMessage::Ping, Vec::new());
         assert_enum_message(
@@ -1055,7 +1358,8 @@ mod test {
 
     #[test]
     fn enum_rejects_invalid_discriminant() {
-        let decoder = Decoder::new(EnumMessage::schema());
+        let schema = EnumMessage::schema();
+        let decoder = Decoder::new(&schema);
         let payload = wincode::serialize(&u32::MAX).unwrap();
 
         let error = match decoder.fields(payload.as_slice()) {
@@ -1071,7 +1375,8 @@ mod test {
 
     #[test]
     fn enum_reports_truncated_and_malformed_fields() {
-        let decoder = Decoder::new(EnumMessage::schema());
+        let schema = EnumMessage::schema();
+        let decoder = Decoder::new(&schema);
 
         let truncated_discriminant = [0u8; 3];
         assert!(decoder.fields(&truncated_discriminant[..]).is_err());
@@ -1110,7 +1415,8 @@ mod test {
             bytes: vec![5, 6, 7, 8],
         };
         let payload = wincode::serialize(&value).unwrap();
-        let decoder = Decoder::new(Borrowable::schema());
+        let schema = Borrowable::schema();
+        let decoder = Decoder::new(&schema);
         let fields = decoder
             .fields(payload.as_slice())
             .unwrap()
@@ -1146,7 +1452,8 @@ mod test {
             values: vec![10, 20, 30],
         })
         .unwrap();
-        let decoder = Decoder::new(Owned::schema());
+        let schema = Owned::schema();
+        let decoder = Decoder::new(&schema);
         let mut fields = decoder.fields(Cursor::new(payload)).unwrap();
 
         let text = fields.next().unwrap().unwrap().into_value();
@@ -1262,7 +1569,8 @@ mod test {
             GenericWithEnum::Empty
         ));
 
-        let decoder = Decoder::new(Generic::<u64>::schema());
+        let schema = Generic::<u64>::schema();
+        let decoder = Decoder::new(&schema);
         let payload = wincode::serialize(&Generic::Item(77u64)).unwrap();
         let fields = decoder
             .fields(payload.as_slice())
@@ -1289,7 +1597,8 @@ mod test {
         #[test]
         fn arbitrary_struct_fields_match(message in any::<StructMessage>()) {
             let payload = wincode::serialize(&message).unwrap();
-            let decoder = Decoder::new(StructMessage::schema());
+            let schema = StructMessage::schema();
+            let decoder = Decoder::new(&schema);
             let fields = decoder
                 .fields(payload.as_slice())
                 .unwrap()
@@ -1342,7 +1651,8 @@ mod test {
         #[test]
         fn arbitrary_enum_fields_match(message in any::<EnumMessage>()) {
             let payload = wincode::serialize(&message).unwrap();
-            let decoder = Decoder::new(EnumMessage::schema());
+            let schema = EnumMessage::schema();
+            let decoder = Decoder::new(&schema);
             let actual = decoder
                 .fields(payload.as_slice())
                 .unwrap()
@@ -1372,7 +1682,8 @@ mod test {
             let cut = cut_seed % payload.len();
             payload.truncate(cut);
 
-            let decoder = Decoder::new(StructMessage::schema());
+            let schema = StructMessage::schema();
+            let decoder = Decoder::new(&schema);
             let result = decoder
                 .fields(payload.as_slice())
                 .and_then(|fields| fields.collect::<ReadResult<Vec<_>>>());
@@ -1397,7 +1708,8 @@ mod test {
                         values: values.clone(),
                     };
                     let payload = wincode::serialize(&message).unwrap();
-                    let decoder = Decoder::new(Message::schema());
+                    let schema = Message::schema();
+                    let decoder = Decoder::new(&schema);
                     let value = decoder
                         .fields(payload.as_slice())
                         .unwrap()
