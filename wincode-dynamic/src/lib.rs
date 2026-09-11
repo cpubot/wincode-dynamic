@@ -5,6 +5,7 @@ extern crate alloc;
 
 use {
     alloc::{boxed::Box, string::String},
+    core::{iter::FusedIterator, marker::PhantomData, slice},
     wincode::{ReadResult, SchemaRead, SchemaWrite, error::invalid_tag_encoding, io::Reader},
 };
 
@@ -29,7 +30,7 @@ pub struct FieldDef {
     size: Option<usize>,
 }
 
-/// A decoded field yielded by [`Decoder::fields`].
+/// A decoded field yielded by [`Fields`].
 ///
 /// The field borrows its metadata from the decoder's schema and its value from
 /// the encoded input data.
@@ -40,6 +41,52 @@ pub struct Field<'meta, 'data> {
     size: Option<usize>,
     value: Value<'data>,
 }
+
+/// An iterator that lazily decodes a payload's fields in schema order.
+///
+/// Returned by [`Schema::fields`], [`Decoder::fields`],
+/// [`SchemaDecoder::fields`], and [`VariantDecoder::fields`]. The iterator
+/// owns its reader and borrows field definitions from the schema. Decoded
+/// values can borrow from the input when the reader supports it.
+///
+/// Each item contains a decoded [`Field`] or its decoding error. The exact
+/// remaining length counts fields, including any that may fail to decode.
+/// Dropping the iterator early leaves the remaining fields unread.
+#[derive(Debug)]
+pub struct Fields<'schema, 'de, R> {
+    fields: slice::Iter<'schema, FieldDef>,
+    reader: R,
+    _marker: PhantomData<&'de ()>,
+}
+
+impl<'schema, 'de, R: Reader<'de>> Iterator for Fields<'schema, 'de, R> {
+    type Item = ReadResult<Field<'schema, 'de>>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        let field = self.fields.next()?;
+        Some(field.parse(self.reader.by_ref()).map(|value| Field {
+            name: &field.name,
+            ty: field.ty,
+            size: field.size,
+            value,
+        }))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.fields.size_hint()
+    }
+}
+
+impl<'de, R: Reader<'de>> ExactSizeIterator for Fields<'_, 'de, R> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.fields.len()
+    }
+}
+
+impl<'de, R: Reader<'de>> FusedIterator for Fields<'_, 'de, R> {}
 
 impl<'meta, 'data> Field<'meta, 'data> {
     /// Returns the field's name.
@@ -259,19 +306,12 @@ impl Schema {
     /// returned by the corresponding iterator item.
     /// Dropping the iterator early leaves the remaining fields unread.
     #[inline]
-    pub fn fields<'de>(
-        &self,
-        mut reader: impl Reader<'de>,
-    ) -> impl Iterator<Item = ReadResult<Field<'_, 'de>>> {
-        self.fields.iter().map(move |field| {
-            let value = field.parse(reader.by_ref())?;
-            Ok(Field {
-                name: &field.name,
-                ty: field.ty,
-                size: field.size,
-                value,
-            })
-        })
+    pub fn fields<'de, R: Reader<'de>>(&self, reader: R) -> Fields<'_, 'de, R> {
+        Fields {
+            fields: self.fields.iter(),
+            reader,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -446,20 +486,11 @@ impl<'schema> Decoder<'schema> {
     /// # }
     /// ```
     #[inline]
-    pub fn fields<'de, R: Reader<'de>>(
-        &self,
-        reader: R,
-    ) -> ReadResult<impl Iterator<Item = ReadResult<Field<'schema, 'de>>> + use<'schema, 'de, R>>
-    {
-        let (schema, reader) = match self {
-            Self::Struct(decoder) => (decoder.0, reader),
-            Self::Enum(decoder) => {
-                let variant = decoder.decode_variant(reader)?;
-                (variant.schema, variant.reader)
-            }
-        };
-
-        Ok(schema.fields(reader))
+    pub fn fields<'de, R: Reader<'de>>(&self, reader: R) -> ReadResult<Fields<'schema, 'de, R>> {
+        match self {
+            Self::Struct(decoder) => Ok(decoder.fields(reader)),
+            Self::Enum(decoder) => Ok(decoder.decode_variant(reader)?.fields()),
+        }
     }
 }
 
@@ -482,10 +513,7 @@ impl<'schema> SchemaDecoder<'schema> {
     /// returned by the corresponding iterator item.
     /// Dropping the iterator early leaves the remaining fields unread.
     #[inline]
-    pub fn fields<'de, R: Reader<'de>>(
-        &self,
-        reader: R,
-    ) -> impl Iterator<Item = ReadResult<Field<'schema, 'de>>> + use<'schema, 'de, R> {
+    pub fn fields<'de, R: Reader<'de>>(&self, reader: R) -> Fields<'schema, 'de, R> {
         self.0.fields(reader)
     }
 }
@@ -519,14 +547,18 @@ impl<'schema> EnumDecoder<'schema> {
     pub fn decode_variant<'de, R: Reader<'de>>(
         &self,
         mut reader: R,
-    ) -> ReadResult<VariantDecoder<'schema, R>> {
+    ) -> ReadResult<VariantDecoder<'schema, 'de, R>> {
         let disc = self.tag_encoding.parse_into_usize(reader.by_ref())?;
 
         let schema = self
             .variants
             .get(disc)
             .ok_or_else(|| invalid_tag_encoding(disc))?;
-        Ok(VariantDecoder { schema, reader })
+        Ok(VariantDecoder {
+            schema,
+            reader,
+            _marker: PhantomData,
+        })
     }
 }
 
@@ -538,12 +570,13 @@ impl<'schema> EnumDecoder<'schema> {
 /// inspect its name, then consume the decoder with [`fields`](Self::fields)
 /// to lazily decode its fields.
 #[derive(Debug)]
-pub struct VariantDecoder<'schema, R> {
+pub struct VariantDecoder<'schema, 'de, R> {
     schema: &'schema Schema,
     reader: R,
+    _marker: PhantomData<&'de ()>,
 }
 
-impl<'schema, R> VariantDecoder<'schema, R> {
+impl<'schema, 'de, R> VariantDecoder<'schema, 'de, R> {
     /// Returns the selected enum variant's name.
     #[inline]
     pub fn variant_name(&self) -> &'schema str {
@@ -561,11 +594,24 @@ impl<'schema, R> VariantDecoder<'schema, R> {
     /// returned by the corresponding iterator item.
     /// Dropping the iterator early leaves the remaining fields unread.
     #[inline]
-    pub fn fields<'de>(self) -> impl Iterator<Item = ReadResult<Field<'schema, 'de>>>
+    pub fn fields(self) -> Fields<'schema, 'de, R>
     where
         R: Reader<'de>,
     {
         self.schema.fields(self.reader)
+    }
+}
+
+impl<'schema, 'de, R> IntoIterator for VariantDecoder<'schema, 'de, R>
+where
+    R: Reader<'de>,
+{
+    type Item = ReadResult<Field<'schema, 'de>>;
+    type IntoIter = Fields<'schema, 'de, R>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.fields()
     }
 }
 
@@ -1295,9 +1341,10 @@ mod test {
         .unwrap();
         let decoder = schema.decoder();
         let mut reader = payload.as_slice();
-        let mut fields = decoder.fields(&mut reader).unwrap();
-        let field = fields.next().unwrap().unwrap();
-        drop(fields);
+        let field = {
+            let mut fields = decoder.fields(&mut reader).unwrap();
+            fields.next().unwrap().unwrap()
+        };
 
         assert_eq!(field.name(), "value");
         assert_eq!(field.value(), &Value::U64(42));
